@@ -224,6 +224,14 @@ export class GraphLayout {
     let structural = false;
     const seen = new Set<string>();
     const centroids = groupCentroids(this.nodes.values());
+    // Groups that have no members yet get spread-out anchors, so repos start
+    // apart instead of all entering at the origin and tangling.
+    const anchors = groupAnchors(
+      nodes.filter((n) => !this.nodes.has(n.id)),
+      centroids,
+      this.nodes.values(),
+    );
+    for (const [g, p] of anchors) centroids.set(g, p);
     for (const input of nodes) {
       seen.add(input.id);
       const existing = this.nodes.get(input.id);
@@ -347,6 +355,46 @@ export class GraphLayout {
     this.warm(now);
   }
 }
+
+/**
+ * Entry anchors for groups that have no placed members yet. On an empty
+ * layout they sit evenly on a circle whose radius grows with the node count;
+ * later they go just outside the current layout, at golden-angle steps.
+ * Groups are anchored in key order, so the result is deterministic.
+ */
+export function groupAnchors(
+  entering: readonly LayoutNodeInput[],
+  centroids: ReadonlyMap<string, { x: number; y: number }>,
+  placed: Iterable<{ x: number; y: number }>,
+): Map<string, { x: number; y: number }> {
+  const fresh = [...new Set(entering.flatMap((n) => n.groups))].filter((g) => !centroids.has(g)).sort();
+  const out = new Map<string, { x: number; y: number }>();
+  if (fresh.length === 0) return out;
+  const pts = [...placed];
+  let cx = 0;
+  let cy = 0;
+  for (const p of pts) {
+    cx += p.x / pts.length;
+    cy += p.y / pts.length;
+  }
+  let maxR = 0;
+  for (const p of pts) maxR = Math.max(maxR, Math.hypot(p.x - cx, p.y - cy));
+  if (pts.length === 0 && fresh.length === 1) {
+    out.set(fresh[0] as string, { x: 0, y: 0 });
+    return out;
+  }
+  const empty = pts.length === 0;
+  const radius = empty ? 100 + 60 * Math.sqrt(entering.length) : maxR + 150;
+  const offset = empty ? -Math.PI / 2 : centroids.size * GOLDEN_ANGLE;
+  const step = empty ? (2 * Math.PI) / fresh.length : GOLDEN_ANGLE;
+  fresh.forEach((g, i) => {
+    const a = offset + i * step;
+    out.set(g, { x: cx + radius * Math.cos(a), y: cy + radius * Math.sin(a) });
+  });
+  return out;
+}
+
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 
 function endpointId(end: string | number | LayoutNode): string {
   return typeof end === 'object' ? end.id : String(end);
