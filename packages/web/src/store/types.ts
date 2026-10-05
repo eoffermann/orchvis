@@ -10,12 +10,8 @@ import type {
   SessionNode,
 } from '@orchvis/protocol';
 
-/**
- * A message as the store keeps it. `seenAt` is set from `seen` deltas. The
- * intersection is a no-op against protocol versions whose `Message` already
- * carries `seenAt`.
- */
-export type StoreMessage = Message & { seenAt?: number };
+/** A message as the store keeps it. Its `seenAt` is updated from `seen` deltas. */
+export type StoreMessage = Message;
 
 /**
  * State of the `/ws/ui` connection.

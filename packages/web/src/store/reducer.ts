@@ -200,9 +200,7 @@ function applyMessage(state: AppState, frame: FrameOf<BrokerToUiFrame, 'message'
 }
 
 function applySeen(state: AppState, frame: FrameOf<BrokerToUiFrame, 'seen'>): AppState {
-  // Protocol versions before `seenAt` existed on this frame fall back to the
-  // current broker-clock estimate.
-  const seenAt = (frame.payload as { seenAt?: number }).seenAt ?? state.now;
+  const { seenAt } = frame.payload;
   const byThread = new Map<string, Set<string>>();
   for (const id of frame.payload.ids) {
     const threadId = state.data.messageThread[id];

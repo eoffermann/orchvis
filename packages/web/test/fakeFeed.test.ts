@@ -97,10 +97,13 @@ describe('FakeBroker', () => {
     ];
     for (const f of out) expectValid(f);
     expect(out.map((f) => f.type)).toEqual(['control_state', 'pong', 'sent', 'message', 'rejected']);
-    // Paused: no peer messages for a while.
+    // Paused: only Owner traffic flows. Pause never blocks messages to or from
+    // the Owner, so the target's reply to the Owner is allowed.
     for (let i = 0; i < 200; i++) {
       for (const f of fb.step(T0 + 10 + i)) {
-        if (f.type === 'message') expect(f.payload.message.senderKind).toBe('owner');
+        if (f.type !== 'message') continue;
+        const { from, to } = f.payload.message;
+        expect(from.kind === 'owner' || to.kind === 'owner').toBe(true);
       }
     }
   });
