@@ -22,3 +22,6 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
+      # plugin/bin/shim.cjs is committed so the plugin installs straight from
+      # the marketplace; fail if it is older than packages/shim.
+      - run: node scripts/build-plugin.mjs --check

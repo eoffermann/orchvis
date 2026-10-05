@@ -7,6 +7,9 @@
     "node": ">=20"
   },
   "scripts": {
+    "build": "node scripts/build-web.mjs",
+    "build:plugin": "node scripts/build-plugin.mjs",
+    "start": "node scripts/orchvis-start.mjs",
     "test": "pnpm -r --if-present test",
     "typecheck": "pnpm -r --if-present typecheck",
     "check": "pnpm typecheck && pnpm test"
