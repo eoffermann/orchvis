@@ -70,8 +70,8 @@ function checkoutPage({ total, broken }) {
   <main>
     <div class="card left"><h2>Shipping</h2>
       <div class="row2"><div><label>First name</label><div class="in">Jordan</div></div><div><label>Last name</label><div class="in">Rivera</div></div></div>
-      <label>Address</label><div class="in">1420 Alder Street, Apt 3</div>
-      <div class="row2"><div><label>City</label><div class="in">Portland</div></div><div><label>ZIP</label><div class="in">97205</div></div></div>
+      <label>Address</label><div class="in">123 Example Lane, Apt 4</div>
+      <div class="row2"><div><label>City</label><div class="in">Springfield</div></div><div><label>ZIP</label><div class="in">00000</div></div></div>
       <h2 style="margin-top:18px">Payment</h2><div class="in">•••• •••• •••• 4242 &nbsp; 08/29</div>
     </div>
     <div class="card right"><h2>Order summary</h2>
