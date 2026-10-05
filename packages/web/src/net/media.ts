@@ -14,7 +14,21 @@ import {
  * `404 not_found` once the item has expired.
  */
 export function mediaUrl(mediaId: string): string {
+  const override = mediaUrlOverride?.(mediaId);
+  if (override !== undefined) return override;
   return `${MEDIA_PATH}/${encodeURIComponent(mediaId)}`;
+}
+
+let mediaUrlOverride: ((mediaId: string) => string | undefined) | null = null;
+
+/**
+ * Dev-only seam: lets an in-process fake feed (the `?fake=showcase`
+ * scenario) serve its media from bundled static assets instead of the
+ * broker. `resolve` returns a URL, or undefined to fall back to the broker
+ * path. Pass null to remove the override.
+ */
+export function setMediaUrlOverride(resolve: ((mediaId: string) => string | undefined) | null): void {
+  mediaUrlOverride = resolve;
 }
 
 /** Outcome of {@link uploadMedia}. */
