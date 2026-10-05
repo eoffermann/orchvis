@@ -30,6 +30,6 @@ export const REJECT_EXPLANATIONS: Readonly<Record<RejectCode, string>> = Object.
   rate_limited: 'Too many messages to this recipient in the last minute. Stop sending and continue local work.',
   muted: 'The Owner has muted this thread. Stop sending on it and continue local work.',
   paused: 'The Owner has paused peer traffic. Stop sending and continue local work.',
-  recipient_gone: 'The recipient has been disconnected for too long and has been removed.',
+  recipient_gone: 'The recipient has been disconnected for too long, and messages are no longer queued for it. Its history stays readable with get_thread.',
   invalid: 'The request was malformed or not allowed.',
 });
