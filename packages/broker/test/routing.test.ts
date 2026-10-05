@@ -156,17 +156,20 @@ describe('rejection codes', () => {
     expect((await ui.next('control_state')).payload.pausedSessions).toEqual(['host:a']);
     expect(code(await a.sendMessage('BETA', 'x'))).toBe('paused');
     expect(code(await b.sendMessage('ALPHA', 'x'))).toBe('sent');
+    expect(code(await a.sendMessage('owner', 'paused session replies to owner'))).toBe('sent');
     ui.send('control', { action: 'resume_session', sessionId: 'host:a' });
     await ui.next('control_state');
 
     ui.send('control', { action: 'pause_all' });
     expect((await ui.next('control_state')).payload.pausedAll).toBe(true);
     expect(code(await a.sendMessage('BETA', 'x'))).toBe('paused');
-    expect(code(await b.sendMessage('owner', 'x'))).toBe('paused');
+    // A message to the Owner goes through pause_all, a session pause and a mute.
+    expect(code(await b.sendMessage('owner', 'reply under pause_all'))).toBe('sent');
 
     // Owner messages go through every control, and are not rate limited.
     ui.send('control', { action: 'mute_thread', threadId: 'host:a|owner' });
     await ui.next('control_state');
+    expect(code(await a.sendMessage('owner', 'muted owner thread, still sent'))).toBe('sent');
     for (let i = 0; i < DEFAULT_LIMITS.sendRatePerMinute + 5; i++) {
       const re = ui.send('owner_send', { to: 'host:a', kind: 'chat', body: `o${i}`, attachments: [] });
       await ui.next('sent', (f) => f.payload.re === re);

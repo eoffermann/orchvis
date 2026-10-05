@@ -9,6 +9,7 @@ export * from './version.js';
 export * from './clock.js';
 export * from './log.js';
 export * from './config.js';
+export * from './ports.js';
 export * from './rate-limit.js';
 export * from './threads.js';
 export * from './core.js';

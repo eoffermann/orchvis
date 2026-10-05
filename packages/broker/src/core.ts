@@ -449,9 +449,12 @@ export class BrokerCore {
     const from = sessionAddress(rec.node.id);
     if (to.kind === 'session' && to.id === rec.node.id) throw new Rejection('invalid', 'cannot send a message to yourself');
     const threadId = threadIdFor(from, to);
-    if (this.control.pausedAll) throw new Rejection('paused', 'all peer traffic is paused');
-    if (this.control.pausedSessions.has(rec.node.id)) throw new Rejection('paused', 'this session is paused');
-    if (this.control.mutedThreads.has(threadId)) throw new Rejection('muted', 'this thread is muted');
+    // Controls never block a message to or from the Owner: a paused session can still reply to the Owner.
+    if (to.kind !== 'owner') {
+      if (this.control.pausedAll) throw new Rejection('paused', 'all peer traffic is paused');
+      if (this.control.pausedSessions.has(rec.node.id)) throw new Rejection('paused', 'this session is paused');
+      if (this.control.mutedThreads.has(threadId)) throw new Rejection('muted', 'this thread is muted');
+    }
     const now = this.clock.now();
     if (!this.limiter.tryAcquire(`${rec.node.id}\u0000${threadId}`, now)) {
       throw new Rejection('rate_limited', `over ${this.limits.sendRatePerMinute} messages per minute on this thread`);
