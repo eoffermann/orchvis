@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import { sharedTest } from '../../vitest.shared.js';
 
 /**
  * Unit tests run in Node by default. Component tests (`*.test.tsx`) opt into
@@ -7,6 +8,7 @@ import { defineConfig } from 'vitest/config';
  */
 export default defineConfig({
   test: {
+    ...sharedTest,
     environment: 'node',
     include: ['test/**/*.test.{ts,tsx}'],
   },
