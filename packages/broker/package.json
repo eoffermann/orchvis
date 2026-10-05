@@ -10,6 +10,7 @@
   },
   "scripts": {
     "start": "tsx src/cli.ts",
+    "soak": "node --expose-gc --import tsx scripts/soak.ts",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json"
   },
