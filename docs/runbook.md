@@ -23,7 +23,7 @@ One broker runs on an always-on machine on the LAN. Every Claude Code session ru
 | Broker port | broker host, TCP 7801 by default | HTTP and WebSocket: `/ws/shim`, `/ws/ui`, `/api/*`, `/healthz`, the web app |
 | Broker config | broker host, `~/.orchvis/orchvis.config.json` (or `--config`, or `ORCHVIS_CONFIG`) | port, bind address, **shim token, Owner token**, limits |
 | Shim config | every session machine, `~/.orchvis/config.json` | broker URL, **shim token** |
-| Inbox mirror | every session machine, `~/.orchvis/inbox/<session-id>.json` | unread messages, for the poll-mode hooks |
+| Inbox mirror | every session machine, `~/.orchvis/inbox/<Claude session id>.json` (the raw `CLAUDE_CODE_SESSION_ID`, without the host prefix) | unread messages, for the poll-mode hooks |
 | Broker log | broker host, `~/.orchvis/broker.log`, only when started with `--background` | structured lines; never message bodies, captions, filenames or tokens |
 | Media store | broker host, a per-process directory under the OS temp dir | uploads, deleted on expiry and wiped on start and clean shutdown |
 
@@ -100,6 +100,8 @@ A host session can bring the network up, but it cannot arm push delivery on othe
 | poll | anything else, including a session that ignored the probe for 60 s | `check_inbox`; an `Unread: N` line on every orchvis tool result; the plugin hooks, which add unread messages as context on each prompt and after each tool call |
 
 A polling session that is idle cannot be woken: it sees messages on its next prompt or tool call. The web app marks such nodes. Calling `register` again re-runs the probe.
+
+The hooks print nothing in push mode (the channel already delivered), right after `check_inbox`, and for messages they have already shown. A silent hook is normally one of those cases, not a fault.
 
 ## Broker restart
 
