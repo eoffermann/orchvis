@@ -1,15 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import {
-  DEFAULT_LIMITS,
-  weightAt,
-  type BrokerToUiFrame,
-  type ControlState,
-  type EdgeStats,
-  type Message,
-  type SessionNode,
-} from '@orchvis/protocol';
+import { DEFAULT_LIMITS } from '@orchvis/protocol';
 import { CloseCodes } from '../src/index.js';
-import type { FakeUi } from './helpers/fake.js';
+import { UiStateMirror, diffUiStates } from '@orchvis/simulator';
 import { harness } from './helpers/setup.js';
 
 /** Heartbeat slow enough that large clock jumps do not disconnect the test shims. */
@@ -206,60 +198,6 @@ describe('heartbeat', () => {
   });
 });
 
-/** The web app's view of the broker, built only from what /ws/ui sends. */
-interface UiState {
-  nodes: Map<string, SessionNode>;
-  edges: Map<string, EdgeStats>;
-  messages: Message[];
-  control: ControlState;
-}
-
-function emptyState(): UiState {
-  return { nodes: new Map(), edges: new Map(), messages: [], control: { mutedThreads: [], pausedSessions: [], pausedAll: false } };
-}
-
-function apply(state: UiState, frame: BrokerToUiFrame, ringLimit: number): void {
-  switch (frame.type) {
-    case 'snapshot': {
-      const p = frame.payload;
-      state.nodes = new Map(p.nodes.map((n) => [n.id, n]));
-      state.edges = new Map(p.edges.map((e) => [e.threadId, e]));
-      state.messages = p.messages.map((m) => ({ ...m }));
-      state.control = p.control;
-      break;
-    }
-    case 'node':
-      if (frame.payload.op === 'upsert') state.nodes.set(frame.payload.node.id, frame.payload.node);
-      else state.nodes.delete(frame.payload.id);
-      break;
-    case 'message': {
-      const { message, edge } = frame.payload;
-      state.messages.push({ ...message });
-      state.edges.set(edge.threadId, edge);
-      const inThread = state.messages.filter((m) => m.threadId === message.threadId);
-      if (inThread.length > ringLimit) {
-        const drop = new Set(inThread.slice(0, inThread.length - ringLimit).map((m) => m.id));
-        state.messages = state.messages.filter((m) => !drop.has(m.id));
-      }
-      break;
-    }
-    case 'seen':
-      for (const m of state.messages) if (frame.payload.ids.includes(m.id)) m.seenAt = frame.payload.seenAt;
-      break;
-    case 'control_state':
-      state.control = frame.payload;
-      break;
-    default:
-      break;
-  }
-}
-
-function replay(ui: FakeUi, ringLimit: number): UiState {
-  const state = emptyState();
-  for (const f of ui.frames) apply(state, f, ringLimit);
-  return state;
-}
-
 describe('snapshot equals replayed deltas', () => {
   it('a UI connected from the start ends with the same state as a fresh snapshot', async () => {
     const ring = 3;
@@ -299,36 +237,31 @@ describe('snapshot equals replayed deltas', () => {
     const { shim: b2 } = await h.shim('host:b2', { hostname: 'host' });
     const reg = await b2.register('ALPHA-2');
     expect(reg.payload.sessionId).toBe('host:b');
-    await b2.sendMessage('ALPHA', 'after alias');
+    expect((await b2.sendMessage('ALPHA', 'after alias')).type).toBe('rejected');
+    expect((await b2.sendMessage('owner', 'paused reply to owner')).type).toBe('sent');
     h.clock.advance(12_345);
     await a.sync();
     await b2.sync();
     await ui.sync();
 
-    const replayed = replay(ui, ring);
+    const mirror = new UiStateMirror();
+    for (const f of ui.frames) mirror.apply(f);
     const { snapshot } = await h.ui();
+    const fresh = new UiStateMirror();
+    fresh.apply(snapshot);
     const snap = snapshot.payload;
-    const now = snap.now;
-
-    const byId = <T extends { id: string }>(xs: Iterable<T>) => [...xs].sort((x, y) => (x.id < y.id ? -1 : 1));
-    expect(byId(replayed.nodes.values())).toEqual(byId(snap.nodes));
-    expect(byId(replayed.messages)).toEqual(byId(snap.messages));
-    expect(replayed.control).toEqual(snap.control);
+    expect(diffUiStates(mirror.state(), fresh.state(), snap.now)).toEqual([]);
     expect(snap.control).toEqual({ mutedThreads: ['host:a|host:c'], pausedSessions: ['host:b'], pausedAll: false });
-
-    const edgesR = [...replayed.edges.values()].sort((x, y) => (x.threadId < y.threadId ? -1 : 1));
-    const edgesS = [...snap.edges].sort((x, y) => (x.threadId < y.threadId ? -1 : 1));
-    expect(edgesR.map((e) => e.threadId)).toEqual(edgesS.map((e) => e.threadId));
-    edgesR.forEach((e, i) => {
-      const s = edgesS[i]!;
-      expect(weightAt(e, now)).toBeCloseTo(weightAt(s, now), 12);
-      expect({ ...e, weight: 0, updatedAt: 0 }).toEqual({ ...s, weight: 0, updatedAt: 0 });
-    });
 
     // The scenario covered what it set out to.
     expect(snap.messages.some((m) => m.seenAt !== undefined)).toBe(true);
     expect(snap.nodes.map((n) => n.id).sort()).toEqual(['host:a', 'host:b']);
     expect(snap.messages.filter((m) => m.threadId === 'host:a|host:b')).toHaveLength(ring);
+    // A removed node's threads and buffered messages stay until the ring buffer drops them.
+    expect(snap.messages.filter((m) => m.threadId === 'host:c|owner').map((m) => m.body)).toEqual(['to owner', 'from owner']);
+    expect(snap.edges.some((e) => e.threadId === 'host:c|owner')).toBe(true);
+    // The paused session could still reply to the Owner.
+    expect(snap.messages.some((m) => m.body === 'paused reply to owner')).toBe(true);
   });
 });
 
