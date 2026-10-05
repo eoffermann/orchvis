@@ -1,0 +1,18 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.vite/
+playwright-report/
+test-results/
+packages/broker/public/
+plugin/bin/shim.cjs
+
+# Broker config holds tokens; it must never live in a working tree.
+orchvis.config.json
+.env
+.env.*
+
+.DS_Store
+Thumbs.db
+~$*
