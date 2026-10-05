@@ -22,6 +22,8 @@ pnpm --filter @orchvis/protocol exec vitest run -t "normalizeRepoKey"
 
 Packages export their TypeScript source (`"exports": "./src/index.ts"`), so workspace consumers need no build step; Vite, esbuild and Vitest compile it directly.
 
+Every package needs a `vitest.config.ts` that spreads `sharedTest` from the root `vitest.shared.ts` into its `test` block. That runs tests in worker threads: the default fork pool crashes intermittently on Windows (exit `0xC0000409`). `vitest.setup.ts` fails any run that is not in a worker thread.
+
 ## What this is
 
 The Orchestration Visualizer (`orchvis`) is a message bus for Claude Code sessions with a live web view. It has three components sharing one wire schema:
