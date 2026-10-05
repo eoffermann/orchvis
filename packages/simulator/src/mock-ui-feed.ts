@@ -9,7 +9,9 @@ import {
   LoginRequestSchema,
   MEDIA_PATH,
   OWNER_COOKIE,
+  SHIM_TOKEN_HEADER,
   UI_WS_PATH,
+  UPLOAD_KEY_HEADER,
   UiToBrokerFrameSchema,
   WS_CLOSE,
   createFrameFactory,
@@ -154,7 +156,7 @@ export async function startMockUiFeed(options: MockUiFeedOptions = {}): Promise<
     if (origin) {
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Access-Control-Allow-Credentials', 'true');
-      res.setHeader('Access-Control-Allow-Headers', 'content-type, x-orchvis-token, range');
+      res.setHeader('Access-Control-Allow-Headers', `content-type, ${SHIM_TOKEN_HEADER}, ${UPLOAD_KEY_HEADER}, range`);
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
       res.setHeader('Vary', 'Origin');
     }

@@ -107,6 +107,7 @@ describe('frame round trips', () => {
       re: 's1',
       sessionId: node.id,
       name: 'ORCH-UI',
+      uploadKey: 'k'.repeat(32),
       limits: { ...DEFAULT_LIMITS },
       peers: [toPeerInfo(node)],
       brokerVersion: '0.1.0',

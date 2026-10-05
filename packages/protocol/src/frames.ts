@@ -177,13 +177,23 @@ export type ShimToBrokerFrame = z.infer<typeof ShimToBrokerFrameSchema>;
 
 // ---- Broker to shim ----
 
-/** Answer to `hello`: the assigned name, the limits in force, and the current peers. */
+/**
+ * Answer to `hello`: the assigned name, the limits in force, the current peers,
+ * and this connection's upload key.
+ */
 export const WelcomeFrame = frame(
   'welcome',
   z.object({
     re,
     sessionId: SessionIdSchema,
     name: SessionNameSchema,
+    /**
+     * Random secret identifying this WebSocket connection on HTTP media
+     * requests, sent as the `x-orchvis-upload-key` header beside the shim
+     * token. New on every `welcome`; the previous key stops working when its
+     * connection closes. Never logged.
+     */
+    uploadKey: z.string().min(16).max(128),
     limits: LimitsSchema,
     peers: z.array(PeerInfoSchema),
     brokerVersion: z.string().max(64),

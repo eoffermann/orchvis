@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_LIMITS } from '@orchvis/protocol';
-import { CloseCodes } from '../src/index.js';
+import { WS_CLOSE } from '@orchvis/protocol';
 import { UiStateMirror, diffUiStates } from '@orchvis/simulator';
 import { harness } from './helpers/setup.js';
 
@@ -193,7 +193,7 @@ describe('heartbeat', () => {
     h.clock.advance(DEFAULT_LIMITS.heartbeatIntervalMs);
     const node = await ui.next('node', (f) => f.payload.op === 'upsert' && !f.payload.node.connected);
     expect(node.payload.op === 'upsert' && node.payload.node.lastSeen).toBe(start);
-    expect((await shim.closed).code).toBe(CloseCodes.timeout);
+    expect((await shim.closed).code).toBe(WS_CLOSE.heartbeatTimeout);
     expect(h.logs.some((l) => l.includes('"heartbeat_timeout"'))).toBe(true);
   });
 });

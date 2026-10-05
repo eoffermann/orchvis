@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_LIMITS } from '@orchvis/protocol';
-import { CloseCodes } from '../src/index.js';
+import { WS_CLOSE } from '@orchvis/protocol';
 import { FakeShim, helloPayload } from './helpers/fake.js';
 import { harness } from './helpers/setup.js';
 
@@ -11,7 +11,7 @@ describe('/ws/shim hello', () => {
     shim.send('hello', helloPayload(h.broker, { sessionId: 'host:1', token: 'wrong-token' }));
     const rej = await shim.next('rejected');
     expect(rej.payload.code).toBe('unauthorized');
-    expect((await shim.closed).code).toBe(CloseCodes.unauthorized);
+    expect((await shim.closed).code).toBe(WS_CLOSE.helloRejected);
   });
 
   it('rejects a non-hello first frame as invalid and closes', async () => {
@@ -20,7 +20,7 @@ describe('/ws/shim hello', () => {
     const id = shim.send('ping', {});
     const rej = await shim.next('rejected');
     expect(rej.payload).toMatchObject({ re: id, code: 'invalid' });
-    expect((await shim.closed).code).toBe(CloseCodes.invalidHello);
+    expect((await shim.closed).code).toBe(WS_CLOSE.helloRejected);
   });
 
   it('rejects malformed JSON as the first frame', async () => {
@@ -35,7 +35,17 @@ describe('/ws/shim hello', () => {
     const h = await harness();
     const shim = await FakeShim.open(h.broker);
     h.clock.advance(DEFAULT_LIMITS.disconnectAfterMs);
-    expect((await shim.closed).code).toBe(CloseCodes.invalidHello);
+    expect((await shim.closed).code).toBe(WS_CLOSE.helloRejected);
+  });
+
+  it('gives every connection its own upload key, rotated on reconnect', async () => {
+    const h = await harness();
+    const { welcome: a } = await h.shim('host:1');
+    const { welcome: b } = await h.shim('host:2');
+    expect(a.payload.uploadKey.length).toBeGreaterThanOrEqual(16);
+    expect(a.payload.uploadKey).not.toBe(b.payload.uploadKey);
+    const { welcome: again } = await h.shim('host:1');
+    expect(again.payload.uploadKey).not.toBe(a.payload.uploadKey);
   });
 
   it('welcomes with the default name, the limits and the peers', async () => {
@@ -96,7 +106,7 @@ describe('registry', () => {
     const h = await harness();
     const { shim: first } = await h.shim('host:1');
     const { shim: second } = await h.shim('host:1');
-    expect((await first.closed).code).toBe(CloseCodes.replaced);
+    expect((await first.closed).code).toBe(WS_CLOSE.replaced);
     await second.sync();
     const { snapshot } = await h.ui();
     expect(snapshot.payload.nodes).toEqual([expect.objectContaining({ id: 'host:1', connected: true })]);
