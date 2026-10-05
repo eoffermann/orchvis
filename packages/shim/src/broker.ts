@@ -181,6 +181,8 @@ export class BrokerClient {
   private givenUp = false;
   private lastError = 'connecting';
   private helloRejectCode: RejectCode | undefined;
+  /** Explanation of the latest rejected `hello`, until a `welcome` arrives. */
+  private lastHelloRejection: string | undefined;
   private lastRegister: RegisterPayload | undefined;
   private lastStatus: StatusPayload | undefined;
   private canonicalId: string;
@@ -340,7 +342,8 @@ export class BrokerClient {
         protocolVersion: PROTOCOL_VERSION,
       });
       this.helloId = hello.id;
-      this.lastError = 'waiting for welcome';
+      // Keep the cause visible while retrying after a rejected hello.
+      this.lastError = this.lastHelloRejection ? `${this.lastHelloRejection}; retrying` : 'waiting for welcome';
       log.info(`connected; sent hello as ${this.opts.hello.sessionId}`);
       this.sendFrame(hello);
     });
@@ -407,6 +410,7 @@ export class BrokerClient {
         if (frame.payload.re && frame.payload.re === this.helloId) {
           this.helloRejectCode = frame.payload.code;
           this.lastError = `broker rejected hello: ${explainRejection(frame.payload)}`;
+          this.lastHelloRejection = this.lastError;
           this.opts.log.warn(this.lastError);
           return;
         }
@@ -435,6 +439,7 @@ export class BrokerClient {
   private async onWelcome(welcome: WelcomePayload): Promise<void> {
     this.welcome = welcome;
     this.attempt = 0;
+    this.lastHelloRejection = undefined;
     this.canonicalId = welcome.sessionId;
     this.assignedName = welcome.name;
     this.lastError = 'connected';
