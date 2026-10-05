@@ -11,8 +11,6 @@
 
 ![The orchvis graph: 30 Claude Code sessions on three machines, grouped by repository, with traffic pulsing along the edges](docs/images/hero-graph.png)
 
-<sub>All screenshots use the built-in synthetic showcase scenario (<code>?fake=showcase</code>). Every session, repo, host and message in them is invented.</sub>
-
 </div>
 
 ---
