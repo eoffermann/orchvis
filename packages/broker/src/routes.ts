@@ -134,7 +134,8 @@ async function receiveUpload(req: IncomingMessage, ctx: RouteContext, uploader: 
   try {
     parser = busboy({
       headers: req.headers,
-      limits: { fileSize: fileCap, fieldSize: ctx.limits.maxCaptionBytes, fields: 8, parts: 16, headerPairs: 32 },
+      // One byte over each cap, so a value exactly at the cap is not mistaken for a truncated one.
+      limits: { fileSize: fileCap + 1, fieldSize: ctx.limits.maxCaptionBytes + 1, fields: 8, parts: 16, headerPairs: 32 },
     });
   } catch {
     req.resume();
@@ -174,7 +175,7 @@ async function receiveUpload(req: IncomingMessage, ctx: RouteContext, uploader: 
     if (name !== MEDIA_CAPTION_FIELD) return;
     captionCount++;
     caption = value;
-    if (info.valueTruncated) captionTooLarge = true;
+    if (info.valueTruncated || Buffer.byteLength(value, 'utf8') > ctx.limits.maxCaptionBytes) captionTooLarge = true;
   });
 
   try {
@@ -187,7 +188,7 @@ async function receiveUpload(req: IncomingMessage, ctx: RouteContext, uploader: 
 
   const failure = ((): Failure | undefined => {
     if (fileCount > 1) return fail(400, 'invalid', 'exactly one file is allowed');
-    if (tooLarge) return fail(413, 'too_large', `file is over ${fileCap} bytes`);
+    if (tooLarge || (tap?.bytes ?? 0) > fileCap) return fail(413, 'too_large', `file is over ${fileCap} bytes`);
     if (captionTooLarge) return fail(413, 'too_large', `caption is over ${ctx.limits.maxCaptionBytes} bytes`);
     if (fileCount === 0 || !tap) return fail(400, 'invalid', `missing ${MEDIA_FILE_FIELD}`);
     if (captionCount !== 1 || caption === undefined) return fail(400, 'invalid', `exactly one ${MEDIA_CAPTION_FIELD} is required`);
