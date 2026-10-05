@@ -1,0 +1,26 @@
+{
+  "name": "@orchvis/simulator",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Fake shims on the real orchvis wire protocol, a traffic generator, and a mock /ws/ui feed for the web app.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "orchvis-sim": "./src/cli.ts"
+  },
+  "scripts": {
+    "sim": "tsx src/cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@orchvis/protocol": "workspace:*",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.20.0"
+  }
+}
