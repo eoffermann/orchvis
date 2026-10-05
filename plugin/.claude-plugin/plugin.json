@@ -1,0 +1,11 @@
+{
+  "name": "orchvis",
+  "version": "0.1.0",
+  "description": "Orchestration Visualizer: coordinate Claude Code sessions through one broker the Owner can watch live. Ships the orchvis MCP shim, the session protocol skill and poll-mode inbox hooks.",
+  "author": {
+    "name": "Eddie Offermann"
+  },
+  "homepage": "https://github.com/eoffermann/orchvis",
+  "repository": "https://github.com/eoffermann/orchvis",
+  "keywords": ["orchestration", "multi-session", "channels", "mcp"]
+}

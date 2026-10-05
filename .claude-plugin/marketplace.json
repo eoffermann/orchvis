@@ -1,0 +1,16 @@
+{
+  "name": "orchvis",
+  "owner": {
+    "name": "Eddie Offermann"
+  },
+  "metadata": {
+    "description": "Orchestration Visualizer: a message bus for Claude Code sessions with a live web view."
+  },
+  "plugins": [
+    {
+      "name": "orchvis",
+      "source": "./plugin",
+      "description": "Lets Claude Code sessions message each other and the Owner through the orchvis broker, with a live web view of all traffic."
+    }
+  ]
+}

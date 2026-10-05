@@ -154,6 +154,8 @@ importers:
         specifier: ^8.22.0
         version: 8.22.0
 
+  plugin: {}
+
 packages:
 
   '@asamuzakjp/css-color@7.1.3':

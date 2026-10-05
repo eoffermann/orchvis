@@ -1,0 +1,11 @@
+{
+  "name": "@orchvis/plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "orchvis Claude Code plugin: manifest, MCP config, skills and poll-mode hooks. This package.json only wires the plugin's tests into the workspace; Claude Code ignores it.",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  }
+}
