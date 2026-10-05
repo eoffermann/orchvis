@@ -1,0 +1,29 @@
+{
+  "name": "@orchvis/web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "orchvis web app: the Owner's live graph of Claude Code sessions.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@orchvis/protocol": "workspace:*",
+    "d3-force": "^3.0.0",
+    "d3-polygon": "^3.0.1",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@types/d3-force": "^3.0.10",
+    "@types/d3-polygon": "^3.0.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "vite": "^8.3.2"
+  }
+}

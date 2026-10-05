@@ -1,0 +1,71 @@
+import { UI_WS_PATH } from '@orchvis/protocol';
+
+/** Why a transport closed. */
+export interface CloseInfo {
+  /** WebSocket close code (1006 for an abnormal drop). */
+  code: number;
+  /** Whether the transport ever reached the open state. */
+  opened: boolean;
+}
+
+/** Callbacks a transport reports to. */
+export interface TransportHandlers {
+  /** The connection is open and frames may be sent. */
+  onOpen(): void;
+  /** One raw text frame arrived. It is untrusted until decoded. */
+  onMessage(raw: string): void;
+  /** The connection closed; it will not be reused. */
+  onClose(info: CloseInfo): void;
+}
+
+/**
+ * One connection's worth of text-frame transport. The real one wraps a
+ * WebSocket; the dev fake feed implements the same shape in-process.
+ */
+export interface Transport {
+  /** Sends one raw text frame. Dropped if not open. */
+  send(raw: string): void;
+  /** Closes the connection. `onClose` still fires. */
+  close(): void;
+}
+
+/** Opens a new transport that reports to `handlers`. */
+export type TransportFactory = (handlers: TransportHandlers) => Transport;
+
+/** Close codes that mean the Owner cookie was refused. */
+export const UNAUTHORIZED_CLOSE_CODES: ReadonlySet<number> = new Set([1008, 4401, 4403]);
+
+/** The `/ws/ui` URL for the page's own origin. */
+export function feedUrl(loc: Pick<Location, 'protocol' | 'host'> = window.location): string {
+  const scheme = loc.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${scheme}//${loc.host}${UI_WS_PATH}`;
+}
+
+/** A {@link TransportFactory} over the browser WebSocket. The cookie rides along. */
+export function webSocketTransport(url: string = feedUrl()): TransportFactory {
+  return (handlers) => {
+    const ws = new WebSocket(url);
+    let opened = false;
+    let closed = false;
+    ws.onopen = () => {
+      opened = true;
+      handlers.onOpen();
+    };
+    ws.onmessage = (ev: MessageEvent) => {
+      if (typeof ev.data === 'string') handlers.onMessage(ev.data);
+    };
+    ws.onclose = (ev: CloseEvent) => {
+      if (closed) return;
+      closed = true;
+      handlers.onClose({ code: ev.code, opened });
+    };
+    return {
+      send(raw) {
+        if (ws.readyState === WebSocket.OPEN) ws.send(raw);
+      },
+      close() {
+        ws.close(1000);
+      },
+    };
+  };
+}
