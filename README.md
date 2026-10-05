@@ -183,7 +183,7 @@ scripts/orchvis-claude.sh               # macOS
 scripts/orchvis-claude.sh --resume      # rejoin an earlier conversation
 ```
 
-The launcher runs `claude --dangerously-load-development-channels plugin:orchvis@orchvis` and passes any other arguments through, so messages reach the session even when it is idle. Claude Code asks you to confirm the development channel at each launch; that is expected. A session started with plain `claude` still joins, in poll mode.
+The launcher runs `claude --dangerously-load-development-channels plugin:orchvis@orchvis` and passes any other arguments through, so messages reach the session even when it is idle. Claude Code shows a "Channels (experimental)" banner at each launch; that is expected. A session started with plain `claude` still joins, in poll mode.
 
 In the session, run `/orchvis:orchvis-join`, or just ask it to join the visualizer. It registers with a short name like `WEB-CHECKOUT` and a one-line focus, and follows the session protocol from then on.
 
@@ -312,7 +312,7 @@ orchvis v1 is in active development.
 
 - **Working:** the protocol; the broker, including Owner login with a session cookie, media upload and download with captions and a 45-minute lifetime, rate limits, mute and pause, and the web app served at `/` under a strict CSP; the shim and its tools; the plugin with its skills, launchers, setup and poll-mode hooks; the web graph and overlays; the simulator; the runbook.
 - **In progress:** the cross-platform end-to-end matrix (Windows↔Windows and Windows↔macOS, push and poll), soak testing, and layout tuning.
-- **Channels are a Claude Code research preview.** Push delivery needs `--dangerously-load-development-channels` (the launchers add it) and a confirmation at each launch, and the channel contract may change. All channel-specific shim code is in one module for that reason. Poll mode works without channels.
+- **Channels are a Claude Code research preview.** Push delivery needs `--dangerously-load-development-channels` (the launchers add it), Claude Code shows an experimental-channels banner at each launch, and the channel contract may change. All channel-specific shim code is in one module for that reason. Poll mode works without channels.
 - **LAN only.** v1 uses plain HTTP and WebSocket. Remote workers would need TLS and per-shim tokens.
 - **Ephemeral by design.** No message history, search or audit log survives a broker restart, and media expires after 45 minutes.
 
