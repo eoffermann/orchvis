@@ -92,7 +92,7 @@ export interface LoadedConfig {
   config: BrokerConfig;
   /** Absolute path of the config file. */
   path: string;
-  /** True when this call created the file or added tokens to it; print the tokens once. */
+  /** True when this call created the file or added tokens to it. Report the path; never print the tokens. */
   generatedTokens: boolean;
 }
 

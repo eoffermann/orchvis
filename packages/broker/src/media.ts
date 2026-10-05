@@ -42,11 +42,13 @@ export interface StoredMedia {
 /** Bytes of the file head kept for sniffing. */
 export const SNIFF_HEAD_BYTES = 64 * 1024;
 
-let dirCounter = 0;
-
-/** Default per-process media directory: `<os temp>/orchvis-media-<pid>-<n>`, `n` counting brokers in this process. */
+/**
+ * Default media directory: `<os temp>/orchvis-media-<pid>-<random>`. The
+ * random part keeps brokers apart when several run in one process, including
+ * in different worker threads, which share the pid.
+ */
 export function defaultMediaDir(): string {
-  return join(tmpdir(), `orchvis-media-${process.pid}-${++dirCounter}`);
+  return join(tmpdir(), `orchvis-media-${process.pid}-${randomBytes(6).toString('hex')}`);
 }
 
 /** Generates a media ID: `m` plus 24 random base64url characters. Unguessable, so IDs never enumerate. */
