@@ -1,0 +1,17 @@
+{
+  "name": "@orchvis/protocol",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Wire schema, limits, error codes and shared functions for orchvis. The contract between broker, shim and web app.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
+  }
+}

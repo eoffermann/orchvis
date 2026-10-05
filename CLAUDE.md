@@ -4,9 +4,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-The repo has no code yet. The only source of truth is `Orchestration Visualizer Implementation Plan.docx` (dated 2026-10-04). Read it before starting any work package. Its "Settled decisions" table is fixed input: do not reopen those decisions without the Owner (Eddie).
+The source of truth is `Orchestration Visualizer Implementation Plan.docx` (dated 2026-10-04). Read it before starting any work package. Its "Settled decisions" table is fixed input: do not reopen those decisions without the Owner (Eddie). Who owns which work package, the branch and worktree rules, and the merge rules are in `docs/workstreams.md`.
 
-There are no build, lint or test commands yet. The plan specifies the toolchain below; once WP0 lands, record the real `pnpm` scripts here (including how to run a single Vitest test).
+## Commands
+
+Node 20+ and pnpm 9. TypeScript is pinned to 5.x; do not take the 7.x upgrade pnpm suggests.
+
+```
+pnpm install
+pnpm typecheck                     # tsc in every package
+pnpm test                          # vitest run in every package
+pnpm check                         # both; must be green before a merge to main
+pnpm --filter @orchvis/protocol test
+pnpm --filter @orchvis/protocol exec vitest run test/repo.test.ts
+pnpm --filter @orchvis/protocol exec vitest run -t "normalizeRepoKey"
+```
+
+Packages export their TypeScript source (`"exports": "./src/index.ts"`), so workspace consumers need no build step; Vite, esbuild and Vitest compile it directly.
 
 ## What this is
 

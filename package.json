@@ -1,0 +1,19 @@
+{
+  "name": "orchvis",
+  "private": true,
+  "description": "Orchestration Visualizer: a message bus for Claude Code sessions with a live web view.",
+  "packageManager": "pnpm@9.15.4",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "pnpm -r --if-present test",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "check": "pnpm typecheck && pnpm test"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "~5.9.3",
+    "vitest": "^5.0.3"
+  }
+}
