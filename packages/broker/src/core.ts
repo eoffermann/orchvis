@@ -65,6 +65,48 @@ export interface ConnHandler {
   onClose(): void;
 }
 
+/** Sizes of the broker's in-memory structures, from {@link BrokerCore.stats}. */
+export interface BrokerStats {
+  /** Sessions in the registry, connected or not. */
+  nodes: number;
+  /** Sessions with an open shim connection. */
+  connectedNodes: number;
+  /** Session IDs aliased to a canonical one by `register`. */
+  aliases: number;
+  /** Removed session IDs remembered for `recipient_gone`. */
+  goneIds: number;
+  /** Removed session names remembered for `recipient_gone`. */
+  goneNames: number;
+  /** Messages waiting in offline queues, across all sessions. */
+  queuedMessages: number;
+  /** Threads with a ring buffer. */
+  threads: number;
+  /** Messages held in ring buffers, across all threads. */
+  bufferedMessages: number;
+  /** Entries in the message-ID index; equals `bufferedMessages` when nothing leaks. */
+  indexedMessages: number;
+  /** Threads with edge statistics. */
+  edges: number;
+  /** Open `/ws/shim` connections, welcomed or not. */
+  shimLinks: number;
+  /** Open `/ws/ui` connections. */
+  uiLinks: number;
+  /** Upload keys of open shim connections. */
+  uploadKeys: number;
+  /** Keys tracked by the per-sender, per-thread send limiter. */
+  sendLimiterKeys: number;
+  /** Keys tracked by the upload limiter. */
+  uploadLimiterKeys: number;
+  /** Muted threads. */
+  mutedThreads: number;
+  /** Paused sessions. */
+  pausedSessions: number;
+  /** Files in the media store, attached or not. */
+  mediaFiles: number;
+  /** Bytes in the media store, attached or not. */
+  mediaBytes: number;
+}
+
 type FrameMaker<U extends BrokerToShimFrame | BrokerToUiFrame> = <T extends U['type']>(type: T, payload: PayloadOf<U, T>) => FrameOf<U, T>;
 
 interface ShimLink {
@@ -168,6 +210,42 @@ export class BrokerCore {
   }
 
   // ---------------------------------------------------------------- public
+
+  /**
+   * Sizes of every in-memory structure that grows with traffic, connections
+   * or media, for soak and leak tests. Read-only; computing it is O(nodes +
+   * threads).
+   */
+  stats(): BrokerStats {
+    let queued = 0;
+    let connected = 0;
+    for (const r of this.nodes.values()) {
+      queued += r.queue.length;
+      if (r.link) connected++;
+    }
+    const t = this.threads.sizes();
+    return {
+      nodes: this.nodes.size,
+      connectedNodes: connected,
+      aliases: this.aliases.size,
+      goneIds: this.goneIds.size,
+      goneNames: this.goneNames.size,
+      queuedMessages: queued,
+      threads: t.threads,
+      bufferedMessages: t.buffered,
+      indexedMessages: t.indexed,
+      edges: t.edges,
+      shimLinks: this.shimLinks.size,
+      uiLinks: this.uiLinks.size,
+      uploadKeys: this.uploadKeys.size,
+      sendLimiterKeys: this.limiter.size,
+      uploadLimiterKeys: this.uploadLimiter.size,
+      mutedThreads: this.control.mutedThreads.size,
+      pausedSessions: this.control.pausedSessions.size,
+      mediaFiles: this.media.files,
+      mediaBytes: this.media.bytes,
+    };
+  }
 
   /** Number of sessions in the registry, connected or not. */
   get nodeCount(): number {

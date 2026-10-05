@@ -175,6 +175,16 @@ export class MediaStore {
     return out;
   }
 
+  /** Every entry's ID, size and expiry, in upload order, for tests that compare the index with the directory. */
+  list(): { mediaId: string; bytes: number; expiresAt: number; attached: boolean }[] {
+    return [...this.entries.values()].map((e) => ({
+      mediaId: e.ref.mediaId,
+      bytes: e.ref.bytes,
+      expiresAt: e.ref.expiresAt,
+      attached: e.attachment !== undefined,
+    }));
+  }
+
   /** File names currently in the directory, for tests that check for orphans. */
   listDir(): string[] {
     try {

@@ -6,7 +6,7 @@ import { HEALTH_PATH, PROTOCOL_VERSION, SHIM_WS_PATH, UI_WS_PATH } from '@orchvi
 import { OwnerSessions, uiUpgradeVerdict } from './auth.js';
 import { systemClock, type Clock } from './clock.js';
 import { resolveConfig, type BrokerConfigInput } from './config.js';
-import { BrokerCore, type Conn, type ConnHandler } from './core.js';
+import { BrokerCore, type BrokerStats, type Conn, type ConnHandler } from './core.js';
 import { createLogger, type LogSink } from './log.js';
 import { MediaStore, defaultMediaDir } from './media.js';
 import { registerApiRoutes } from './routes.js';
@@ -41,6 +41,10 @@ export interface RunningBroker {
   ownerToken: string;
   /** This broker's media directory, for tests that inspect it. Deleted on close. */
   mediaDir: string;
+  /** Sizes of the broker's in-memory structures, for soak and leak tests. */
+  stats(): BrokerStats;
+  /** Every media store entry (ID, size, expiry, attached), in upload order, for orphan checks against {@link RunningBroker.mediaDir}. */
+  mediaEntries(): { mediaId: string; bytes: number; expiresAt: number; attached: boolean }[];
   /** Closes every connection and the listener, then deletes the media directory. */
   close(): Promise<void>;
 }
@@ -157,6 +161,8 @@ export async function startBroker(opts: StartBrokerOptions = {}): Promise<Runnin
     shimToken: config.shimToken,
     ownerToken: config.ownerToken,
     mediaDir: media.dir,
+    stats: () => core.stats(),
+    mediaEntries: () => media.list(),
     close: async () => {
       if (closed) return;
       closed = true;
