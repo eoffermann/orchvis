@@ -41,6 +41,8 @@ Options:
   --media-rate <p>  probability a message carries media (default 0.05 when media is on; 0 disables)
   --media-ttl <s>   mock only: media lifetime in seconds (default 2700)
   --host <addr>     mock only: bind address (default 127.0.0.1)
+  --owner-token <t> mock only: Owner token the login page must enter (default mock)
+  --open            mock only: skip login; /ws/ui accepts any client
   --seed <n>        PRNG seed (default 1)
   --duration <s>    stop after this many seconds (default: run until Ctrl+C)
   --help            this text
@@ -64,6 +66,8 @@ async function main(): Promise<void> {
       'mock-ui': { type: 'boolean' },
       port: { type: 'string' },
       host: { type: 'string' },
+      'owner-token': { type: 'string' },
+      open: { type: 'boolean' },
       sessions: { type: 'string' },
       hosts: { type: 'string' },
       repos: { type: 'string' },
@@ -104,6 +108,7 @@ async function main(): Promise<void> {
       hosts,
       repos,
       seed,
+      ...(values.open ? {} : { ownerToken: values['owner-token'] ?? 'mock' }),
       traffic: { rate, mediaRate: mediaRateArg ?? 0.05 },
       ...(ttl !== undefined ? { limits: { mediaTtlMs: Math.round(ttl * 1000) } } : {}),
       onProblem: (p) => warn(`problem: ${p}`),
@@ -111,6 +116,7 @@ async function main(): Promise<void> {
     });
     log(`mock feed ready. Open the web app against: ${feed.url}`);
     log(`HTTP (healthz, login, media): ${feed.httpUrl}`);
+    log(values.open ? 'login: off (--open)' : `login: Owner token is "${values['owner-token'] ?? 'mock'}"`);
     counters = () => {
       const s = feed.stats;
       const snap = feed.world.snapshot();

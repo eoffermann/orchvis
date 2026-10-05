@@ -1,9 +1,17 @@
+import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import {
   BrokerToUiFrameSchema,
+  HEALTH_PATH,
+  LOGIN_PATH,
+  LOGOUT_PATH,
+  LoginRequestSchema,
+  MEDIA_PATH,
+  OWNER_COOKIE,
   UI_WS_PATH,
   UiToBrokerFrameSchema,
+  WS_CLOSE,
   createFrameFactory,
   decodeFrame,
   encodeFrame,
@@ -40,6 +48,13 @@ export interface MockUiFeedOptions {
   traffic?: TrafficOptions;
   /** Probability that a long disconnect retires a session. Default 0.3. */
   churnRate?: number;
+  /**
+   * Owner token. When set, the feed enforces login as the broker does:
+   * `POST /api/login` answers 401 for any other token, and `/ws/ui` closes
+   * with `WS_CLOSE.unauthorized` (4401) without a valid `OWNER_COOKIE`. When
+   * unset, login accepts any non-empty token and `/ws/ui` is open.
+   */
+  ownerToken?: string;
   /** Start traffic at once. Default true; false leaves the world still until `world.start()`. */
   startTraffic?: boolean;
   /** Called when a `/ws/ui` client connects or disconnects, with the number open. */
@@ -87,9 +102,11 @@ const INLINE_MIME = /^(image\/(png|jpeg|gif|webp)|audio\/|video\/|text\/plain)/i
  * the echoed `message`, and a reply from the target shortly after),
  * `control` (with a broadcast `control_state`) and `ping`.
  *
- * HTTP extras for web development: `GET /healthz`, `POST /api/login` (accepts
- * any token), `POST /api/media` (multipart `file` + `caption`, Owner uploads
- * for `owner_send`) and `GET /api/media/:id` (with single-range support).
+ * HTTP extras for web development: `GET /healthz`, `POST /api/login` and
+ * `POST /api/logout` (the broker's contract; see `ownerToken`), `POST
+ * /api/media` (multipart `file` + `caption`, Owner uploads for `owner_send`)
+ * and `GET /api/media/:id` (with single-range support). Unlike the broker, the
+ * mock does not check Origin.
  */
 export async function startMockUiFeed(options: MockUiFeedOptions = {}): Promise<MockUiFeed> {
   const clock = options.clock ?? realClock;
@@ -105,7 +122,24 @@ export async function startMockUiFeed(options: MockUiFeedOptions = {}): Promise<
   const stats: MockUiFeedStats = { connections: 0, openConnections: 0, framesSent: 0, framesReceived: 0, invalidOutbound: 0, invalidInbound: 0 };
   const timers = new TimerGroup(clock);
   const sockets = new Set<WebSocket>();
+  const ownerSessions = new Set<string>();
   let connectionCount = 0;
+
+  function ownerSessionOf(req: IncomingMessage): string | undefined {
+    for (const part of (req.headers.cookie ?? '').split(';')) {
+      const eq = part.indexOf('=');
+      if (eq > 0 && part.slice(0, eq).trim() === OWNER_COOKIE) {
+        const value = part.slice(eq + 1).trim();
+        return ownerSessions.has(value) ? value : undefined;
+      }
+    }
+    return undefined;
+  }
+
+  function json(res: ServerResponse, status: number, body: unknown): void {
+    res.writeHead(status, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(body));
+  }
 
   const server = createServer((req, res) => {
     handleHttp(req, res).catch((err: unknown) => {
@@ -144,17 +178,40 @@ export async function startMockUiFeed(options: MockUiFeedOptions = {}): Promise<
       res.writeHead(204).end();
       return;
     }
-    if (req.method === 'GET' && url.pathname === '/healthz') {
+    if (req.method === 'GET' && url.pathname === HEALTH_PATH) {
       const snap = world.snapshot();
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ ok: true, version: snap.brokerVersion, mock: true, nodes: snap.nodes.length, media: snap.media.length }));
       return;
     }
-    if (req.method === 'POST' && url.pathname === '/api/login') {
-      res.writeHead(204, { 'set-cookie': 'orchvis_owner=mock; HttpOnly; SameSite=Strict; Path=/' }).end();
+    if (req.method === 'POST' && url.pathname === LOGIN_PATH) {
+      const raw = await readBody(req, 4096);
+      let parsed: ReturnType<typeof LoginRequestSchema.safeParse> | undefined;
+      try {
+        parsed = raw ? LoginRequestSchema.safeParse(JSON.parse(raw.toString('utf8'))) : undefined;
+      } catch {
+        parsed = undefined;
+      }
+      if (!parsed?.success) {
+        json(res, 400, { error: 'invalid' });
+        return;
+      }
+      if (options.ownerToken !== undefined && parsed.data.token !== options.ownerToken) {
+        json(res, 401, { error: 'unauthorized' });
+        return;
+      }
+      const sessionId = randomBytes(24).toString('base64url');
+      ownerSessions.add(sessionId);
+      res.writeHead(204, { 'set-cookie': `${OWNER_COOKIE}=${sessionId}; HttpOnly; SameSite=Strict; Path=/` }).end();
       return;
     }
-    if (req.method === 'POST' && url.pathname === '/api/media') {
+    if (req.method === 'POST' && url.pathname === LOGOUT_PATH) {
+      const session = ownerSessionOf(req);
+      if (session) ownerSessions.delete(session);
+      res.writeHead(204, { 'set-cookie': `${OWNER_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` }).end();
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === MEDIA_PATH) {
       const body = await readBody(req, world.limits.maxMediaBytes + 64 * 1024);
       if (!body) {
         res.writeHead(413).end();
@@ -224,7 +281,14 @@ export async function startMockUiFeed(options: MockUiFeedOptions = {}): Promise<
       socket.destroy();
       return;
     }
-    wss.handleUpgrade(req, socket, head, (ws) => onConnection(ws));
+    const authorized = options.ownerToken === undefined || ownerSessionOf(req) !== undefined;
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      if (!authorized) {
+        ws.close(WS_CLOSE.unauthorized, 'unauthorized');
+        return;
+      }
+      onConnection(ws);
+    });
   });
 
   function onConnection(ws: WebSocket): void {
