@@ -94,6 +94,24 @@ export class ThreadStore {
     return { threads: this.buffers.size, buffered, indexed: this.byId.size, edges: this.edges.size };
   }
 
+  /** IDs of every thread with a ring buffer or edge statistics. */
+  threadIds(): string[] {
+    return [...new Set([...this.buffers.keys(), ...this.edges.keys()])];
+  }
+
+  /**
+   * Forgets a thread entirely: its ring buffer, the index entries of its
+   * messages, and its edge statistics. Returns the messages that were
+   * buffered, oldest first.
+   */
+  deleteThread(threadId: string): Message[] {
+    const buffer = this.buffers.get(threadId) ?? [];
+    for (const m of buffer) this.byId.delete(m.id);
+    this.buffers.delete(threadId);
+    this.edges.delete(threadId);
+    return buffer;
+  }
+
   /** Statistics for one thread. */
   edge(threadId: string): EdgeStats | undefined {
     return this.edges.get(threadId);

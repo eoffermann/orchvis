@@ -73,10 +73,11 @@ export interface BrokerStats {
   connectedNodes: number;
   /** Session IDs aliased to a canonical one by `register`. */
   aliases: number;
-  /** Removed session IDs remembered for `recipient_gone`. */
-  goneIds: number;
-  /** Removed session names remembered for `recipient_gone`. */
-  goneNames: number;
+  /**
+   * Disconnected sessions past `offlineRetentionMs`: still in the registry
+   * until `staleRetentionMs`, but sends to them get `recipient_gone`.
+   */
+  expiredQueues: number;
   /** Messages waiting in offline queues, across all sessions. */
   queuedMessages: number;
   /** Threads with a ring buffer. */
@@ -134,10 +135,29 @@ interface NodeRecord {
   /** Messages routed while disconnected, oldest first. */
   queue: Message[];
   lastHeard: number;
-  removeTimer: TimerHandle | undefined;
+  /** Fires `offlineRetentionMs` after disconnect: drops the queue and sets {@link NodeRecord.queueExpired}. */
+  queueTimer: TimerHandle | undefined;
+  /** Fires `staleRetentionMs` after `lastSeen`: purges the node and its threads. */
+  purgeTimer: TimerHandle | undefined;
+  /** Offline retention ran out: nothing is queued and sends get `recipient_gone`. Cleared on reconnect. */
+  queueExpired: boolean;
 }
 
-type Target = { kind: 'owner' } | { kind: 'session'; rec: NodeRecord } | { kind: 'gone'; id: SessionId };
+type Target = { kind: 'owner' } | { kind: 'session'; rec: NodeRecord };
+
+/**
+ * Longest delay a Node timer honors (2^31 - 1 ms, about 24.8 days). A longer
+ * delay fires at once, so the broker re-arms in steps of at most this.
+ */
+export const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+const GONE_DETAIL = 'that session has been disconnected past its offline retention; nothing is queued for it, but its history is still readable';
+
+/** Whether `threadId` has the participant whose address key is `key`. Never throws on a malformed ID. */
+function threadInvolves(threadId: string, key: string): boolean {
+  const parts = threadId.split('|');
+  return parts.length === 2 && (parts[0] === key || parts[1] === key);
+}
 
 class Rejection extends Error {
   constructor(
@@ -170,10 +190,6 @@ export class BrokerCore {
   private readonly nodes = new Map<SessionId, NodeRecord>();
   /** Session IDs from `hello` that `register` aliased, mapped to their canonical ID. */
   private readonly aliases = new Map<SessionId, SessionId>();
-  /** Removed session IDs, for `recipient_gone`. */
-  private readonly goneIds = new Set<SessionId>();
-  /** Lowercased names of removed sessions, mapped to their ID. */
-  private readonly goneNames = new Map<string, SessionId>();
   private readonly threads: ThreadStore;
   private readonly limiter: RollingRateLimiter;
   private readonly uiLinks = new Set<UiLink>();
@@ -219,17 +235,18 @@ export class BrokerCore {
   stats(): BrokerStats {
     let queued = 0;
     let connected = 0;
+    let expired = 0;
     for (const r of this.nodes.values()) {
       queued += r.queue.length;
       if (r.link) connected++;
+      if (r.queueExpired) expired++;
     }
     const t = this.threads.sizes();
     return {
       nodes: this.nodes.size,
       connectedNodes: connected,
       aliases: this.aliases.size,
-      goneIds: this.goneIds.size,
-      goneNames: this.goneNames.size,
+      expiredQueues: expired,
       queuedMessages: queued,
       threads: t.threads,
       bufferedMessages: t.buffered,
@@ -444,7 +461,7 @@ export class BrokerCore {
   dispose(): void {
     this.clock.clearInterval(this.heartbeat);
     this.clock.clearInterval(this.mediaSweep);
-    for (const rec of this.nodes.values()) if (rec.removeTimer) this.clock.clearTimeout(rec.removeTimer);
+    for (const rec of this.nodes.values()) this.cancelRetention(rec);
     for (const link of [...this.shimLinks]) this.closeLink(link, WS_CLOSE.shuttingDown, 'broker shutting down');
     for (const link of [...this.uiLinks]) link.conn.close(WS_CLOSE.shuttingDown, 'broker shutting down');
     this.uiLinks.clear();
@@ -533,18 +550,15 @@ export class BrokerCore {
         rec.link = undefined;
         this.closeLink(old, WS_CLOSE.replaced, 'replaced by a newer connection');
       }
-      if (rec.removeTimer) this.clock.clearTimeout(rec.removeTimer);
-      rec.removeTimer = undefined;
+      this.cancelRetention(rec);
       rec.helloRepos = helloRepos;
       rec.node.cwd = sanitizeText(p.cwd);
       rec.node.platform = p.platform;
       rec.node.hostname = hostname;
       rec.node.repos = unionRepos(helloRepos, rec.extraRepos);
     } else {
-      this.goneIds.delete(id);
       this.aliases.delete(id);
       const name = this.uniqueName(sanitizeSessionName(p.defaultName), undefined);
-      this.goneNames.delete(name.toLowerCase());
       rec = {
         node: {
           id,
@@ -564,7 +578,9 @@ export class BrokerCore {
         link,
         queue: [],
         lastHeard: now,
-        removeTimer: undefined,
+        queueTimer: undefined,
+        purgeTimer: undefined,
+        queueExpired: false,
       };
       this.nodes.set(id, rec);
     }
@@ -609,15 +625,14 @@ export class BrokerCore {
       // Alias: the old, disconnected ID X stays canonical; this connection's ID Y becomes an alias of X.
       const x = target.node.id;
       const y = rec.node.id;
-      if (target.removeTimer) this.clock.clearTimeout(target.removeTimer);
-      target.removeTimer = undefined;
+      this.cancelRetention(target);
+      // Y's node is removed below, and a node remove is a purge: Y's threads go with it (normally there are none yet).
+      const purged = this.purgeThreads(y);
       this.nodes.delete(y);
       this.aliases.set(y, x);
       for (const [k, v] of this.aliases) if (v === y) this.aliases.set(k, x);
-      if (this.control.pausedSessions.delete(y)) {
-        this.control.pausedSessions.add(x);
-        this.broadcastControl();
-      }
+      const pauseMoved = this.control.pausedSessions.delete(y);
+      if (pauseMoved) this.control.pausedSessions.add(x);
       target.link = link;
       link.sessionId = x;
       target.lastHeard = now;
@@ -640,11 +655,11 @@ export class BrokerCore {
       this.sendShim(link, 'registered', { re: frame.id, sessionId: x, name: target.node.name, peers: this.peersFor(x) });
       this.redeliver(target);
       this.broadcastUi('node', { op: 'remove', id: y });
+      if (pauseMoved || purged.controlsChanged) this.broadcastControl();
       this.nodeChanged(target);
       return;
     }
     const name = this.uniqueName(p.name, rec);
-    this.goneNames.delete(name.toLowerCase());
     rec.extraRepos = unionRepos(rec.extraRepos, repos);
     rec.node.name = name;
     rec.node.focus = focus;
@@ -705,9 +720,9 @@ export class BrokerCore {
   private onThreadRequest(link: ShimLink, rec: NodeRecord, frame: FrameOf<ShimToBrokerFrame, 'thread_request'>): void {
     const target = this.resolveTarget(frame.payload.peer);
     let peer: Address;
+    // A session past its offline retention still has readable history, until it is purged.
     if (!target) throw new Rejection('unknown_recipient', 'no session with that name or ID');
     else if (target.kind === 'owner') peer = OWNER_ADDRESS;
-    else if (target.kind === 'gone') peer = sessionAddress(target.id);
     else peer = sessionAddress(target.rec.node.id);
     if (peer.kind === 'session' && peer.id === rec.node.id) throw new Rejection('invalid', 'there is no thread with yourself');
     const threadId = threadIdFor(sessionAddress(rec.node.id), peer);
@@ -760,10 +775,8 @@ export class BrokerCore {
     const media = this.checkAttachments({ kind: 'owner' }, p.attachments);
     const id = this.resolveId(p.to);
     const rec = this.nodes.get(id);
-    if (!rec) {
-      if (this.goneIds.has(id)) throw new Rejection('recipient_gone', 'that session was removed after its offline retention ran out');
-      throw new Rejection('unknown_recipient', 'no session with that ID');
-    }
+    if (!rec) throw new Rejection('unknown_recipient', 'no session with that ID');
+    if (rec.queueExpired) throw new Rejection('recipient_gone', GONE_DETAIL);
     const to = sessionAddress(rec.node.id);
     const threadId = threadIdFor(OWNER_ADDRESS, to);
     const now = this.clock.now();
@@ -816,24 +829,25 @@ export class BrokerCore {
     return current;
   }
 
-  /** Resolves `to`: a live name, then a session ID (through aliases), then `owner`, then a removed session. */
+  /**
+   * Resolves `to`: a registered name, then a session ID (through aliases),
+   * then `owner`. Registered sessions include disconnected ones until they
+   * are purged; a purged session resolves to nothing.
+   */
   private resolveTarget(to: string): Target | undefined {
     const lower = to.toLowerCase();
     for (const rec of this.nodes.values()) if (rec.node.name.toLowerCase() === lower) return { kind: 'session', rec };
-    const id = this.resolveId(to);
-    const rec = this.nodes.get(id);
+    const rec = this.nodes.get(this.resolveId(to));
     if (rec) return { kind: 'session', rec };
     if (lower === OWNER_KEY) return { kind: 'owner' };
-    if (this.goneIds.has(id)) return { kind: 'gone', id };
-    const goneByName = this.goneNames.get(lower);
-    if (goneByName) return { kind: 'gone', id: goneByName };
     return undefined;
   }
 
+  /** The address to send to, or a rejection: unknown (or purged) recipient, or one past its offline retention. */
   private targetAddress(target: Target | undefined, raw: string): Address {
     if (!target) throw new Rejection('unknown_recipient', `no session with that name or ID (${raw.length} chars)`);
-    if (target.kind === 'gone') throw new Rejection('recipient_gone', 'that session was removed after its offline retention ran out');
     if (target.kind === 'owner') return OWNER_ADDRESS;
+    if (target.rec.queueExpired) throw new Rejection('recipient_gone', GONE_DETAIL);
     return sessionAddress(target.rec.node.id);
   }
 
@@ -931,22 +945,114 @@ export class BrokerCore {
     rec.node.connected = false;
     rec.node.lastSeen = rec.lastHeard;
     this.logger.log('shim_disconnected', { sessionId: rec.node.id, reason });
-    if (rec.removeTimer) this.clock.clearTimeout(rec.removeTimer);
-    rec.removeTimer = this.clock.setTimeout(() => this.removeNode(rec), this.limits.offlineRetentionMs);
+    this.cancelRetention(rec);
+    const now = this.clock.now();
+    this.armTimer(rec, 'queueTimer', now + this.limits.offlineRetentionMs, () => this.expireQueue(rec));
+    this.armTimer(rec, 'purgeTimer', rec.node.lastSeen + this.limits.staleRetentionMs, () => this.purgeNode(rec));
     this.nodeChanged(rec);
   }
 
-  private removeNode(rec: NodeRecord): void {
+  /**
+   * Runs `fn` once the clock reaches `deadline`, holding the timer in
+   * `rec[slot]`. Delays over {@link MAX_TIMER_DELAY_MS} are covered in steps,
+   * so a huge configured retention never overflows into firing at once.
+   */
+  private armTimer(rec: NodeRecord, slot: 'queueTimer' | 'purgeTimer', deadline: number, fn: () => void): void {
+    const remaining = Math.max(0, deadline - this.clock.now());
+    if (remaining > MAX_TIMER_DELAY_MS) {
+      rec[slot] = this.clock.setTimeout(() => this.armTimer(rec, slot, deadline, fn), MAX_TIMER_DELAY_MS);
+    } else {
+      rec[slot] = this.clock.setTimeout(() => {
+        rec[slot] = undefined;
+        fn();
+      }, remaining);
+    }
+  }
+
+  /** Cancels both retention timers and restores normal delivery. Called on reconnect, aliasing and disposal. */
+  private cancelRetention(rec: NodeRecord): void {
+    if (rec.queueTimer) this.clock.clearTimeout(rec.queueTimer);
+    if (rec.purgeTimer) this.clock.clearTimeout(rec.purgeTimer);
+    rec.queueTimer = undefined;
+    rec.purgeTimer = undefined;
+    rec.queueExpired = false;
+  }
+
+  /**
+   * Offline retention ran out: drops the queue and rejects further sends with
+   * `recipient_gone`. The node stays in the registry, the graph and `peers`,
+   * and its history stays readable, until {@link BrokerCore.purgeNode}.
+   */
+  private expireQueue(rec: NodeRecord): void {
+    if (this.nodes.get(rec.node.id) !== rec || rec.link) return;
+    this.logger.log('queue_expired', { sessionId: rec.node.id, droppedQueued: rec.queue.length });
+    rec.queue = [];
+    rec.queueExpired = true;
+  }
+
+  /**
+   * Stale retention ran out: forgets the node and everything keyed by it.
+   *
+   * Announced as, in order: a `media` expire for each attached item on its
+   * threads (which carries the store usage), the `node` remove (which drops
+   * the threads, messages and edges on the client), a `control_state` if a
+   * control named the node or one of its threads, then `peers` to shims.
+   */
+  private purgeNode(rec: NodeRecord): void {
     const id = rec.node.id;
     if (this.nodes.get(id) !== rec || rec.link) return;
+    this.cancelRetention(rec);
+    const purged = this.purgeThreads(id);
     this.nodes.delete(id);
-    this.goneIds.add(id);
-    this.goneNames.set(rec.node.name.toLowerCase(), id);
-    this.logger.log('node_removed', { sessionId: id, droppedQueued: rec.queue.length });
+    const owns = (uploaderId: SessionId) => this.resolveId(uploaderId) === id;
+    let uploads = 0;
+    for (const e of this.media.all()) {
+      if (!e.attachment && e.uploader.kind === 'session' && owns(e.uploader.id) && this.media.remove(e.ref.mediaId)) uploads++;
+    }
+    for (const [alias, canonical] of [...this.aliases]) if (alias === id || canonical === id) this.aliases.delete(alias);
+    this.uploadLimiter.deleteWhere((key) => key === `s\u0000${id}`);
+    const unpaused = this.control.pausedSessions.delete(id);
+    this.logger.log('node_purged', {
+      sessionId: id,
+      threads: purged.threads,
+      messages: purged.messages,
+      media: purged.media,
+      uploads,
+      droppedQueued: rec.queue.length,
+    });
     rec.queue = [];
     this.broadcastUi('node', { op: 'remove', id });
-    if (this.control.pausedSessions.delete(id)) this.broadcastControl();
+    if (unpaused || purged.controlsChanged) this.broadcastControl();
     this.broadcastPeers();
+  }
+
+  /**
+   * Deletes every thread `id` took part in: attached media (files, index
+   * entries, each announced as a `media` expire), ring buffers and their
+   * messages (with their seen state), edges, send-limiter entries, queued
+   * copies in other sessions' offline queues, and mutes. Broadcasts only the
+   * media expires; the caller announces the rest with the `node` remove.
+   */
+  private purgeThreads(id: SessionId): { threads: number; messages: number; media: number; controlsChanged: boolean } {
+    const key = addressKey(sessionAddress(id));
+    const doomed = new Set(this.threads.threadIds().filter((t) => threadInvolves(t, key)));
+    let media = 0;
+    for (const e of this.media.all()) {
+      const at = e.attachment;
+      if (!at || !doomed.has(at.threadId) || !this.media.remove(e.ref.mediaId)) continue;
+      media++;
+      const edge = this.threads.adjustMedia(at.threadId, e.kind, -1);
+      if (edge) this.broadcastUi('media', { op: 'expire', mediaId: e.ref.mediaId, threadId: at.threadId, edge, mediaStore: this.media.usage() });
+    }
+    let messages = 0;
+    for (const t of doomed) messages += this.threads.deleteThread(t).length;
+    this.limiter.deleteWhere((k) => doomed.has(k.slice(k.indexOf('\u0000') + 1)));
+    for (const r of this.nodes.values()) if (r.queue.length) r.queue = r.queue.filter((m) => !doomed.has(m.threadId));
+    let controlsChanged = false;
+    for (const t of [...this.control.mutedThreads]) {
+      if (threadInvolves(t, key)) controlsChanged = this.control.mutedThreads.delete(t) || controlsChanged;
+    }
+    return { threads: doomed.size, messages, media, controlsChanged };
   }
 
   private heartbeatTick(): void {

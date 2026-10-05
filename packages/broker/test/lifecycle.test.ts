@@ -7,6 +7,13 @@ import { harness } from './helpers/setup.js';
 /** Heartbeat slow enough that large clock jumps do not disconnect the test shims. */
 const NO_HEARTBEAT = { heartbeatIntervalMs: 3_600_000, disconnectAfterMs: 7_200_000 };
 
+/** Heartbeat slow enough that a jump past staleRetentionMs (100 h) does not disconnect the test shims. */
+const NO_HEARTBEAT_LONG = { heartbeatIntervalMs: 200 * 3_600_000, disconnectAfterMs: 400 * 3_600_000 };
+
+function code(frame: { type: string; payload: unknown }): string {
+  return frame.type === 'sent' ? 'sent' : (frame.payload as { code: string }).code;
+}
+
 describe('offline queue and redelivery', () => {
   it('queues messages for a disconnected node and delivers them in order on reconnect', async () => {
     const h = await harness();
@@ -66,25 +73,35 @@ describe('offline queue and redelivery', () => {
     expect(shim.frames.filter((f) => f.type === 'deliver')).toHaveLength(0);
   });
 
-  it('removes the node after offline retention and drops its queue', async () => {
-    const h = await harness({ limits: NO_HEARTBEAT });
+  it('after offline retention, drops the queue and rejects sends, but keeps the node; a reconnect resumes it', async () => {
+    const h = await harness({ limits: { ...NO_HEARTBEAT, ringBufferPerThread: 1 } });
     const { shim: a } = await h.shim('host:a');
     await a.register('ALPHA');
     const { shim: b } = await h.shim('host:b');
     await b.register('BETA');
     await b.close();
     await a.next('peers', (f) => f.payload.peers.some((p) => p.id === 'host:b' && !p.connected));
-    await a.sendMessage('BETA', 'lost');
+    await a.sendMessage('BETA', 'evicted from the ring, only in the queue');
     h.clock.advance(DEFAULT_LIMITS.offlineRetentionMs - 1);
     await a.sync();
     expect((await a.sendMessage('BETA', 'still queued')).type).toBe('sent');
+    expect(h.broker.stats()).toMatchObject({ queuedMessages: 2, expiredQueues: 0 });
     h.clock.advance(1);
-    await a.next('peers', (f) => f.payload.peers.length === 0);
-    // The same session coming back later is a new node, with nothing queued.
+    await a.sync();
+    expect(h.broker.stats()).toMatchObject({ nodes: 2, queuedMessages: 0, expiredQueues: 1 });
+    expect(h.logs.some((l) => l.includes('"queue_expired"'))).toBe(true);
+    expect(code(await a.sendMessage('BETA', 'rejected'))).toBe('recipient_gone');
+    // Still a peer, and the same session coming back resumes the same node.
     const { shim: b2, welcome } = await h.shim('host:b');
-    expect(welcome.payload.name).toMatch(/^repo@host/);
+    expect(welcome.payload.name).toBe('BETA');
+    expect(welcome.payload.peers.map((p) => p.id)).toEqual(['host:a']);
+    // The dropped queue is gone; the buffered, unseen message is redelivered from the ring.
+    expect((await b2.next('deliver')).payload.message.body).toBe('still queued');
     await b2.sync();
-    expect(b2.frames.filter((f) => f.type === 'deliver')).toHaveLength(0);
+    expect(b2.frames.filter((f) => f.type === 'deliver')).toHaveLength(1);
+    expect(h.broker.stats().expiredQueues).toBe(0);
+    expect(code(await a.sendMessage('BETA', 'normal again'))).toBe('sent');
+    expect((await b2.next('deliver', (f) => f.payload.message.body === 'normal again')).type).toBe('deliver');
   });
 });
 
@@ -125,18 +142,24 @@ describe('ring buffers and thread_request', () => {
     expect(h.logs.some((l) => l.includes('"ring_evicted"'))).toBe(true);
   });
 
-  it('history with a removed peer is still available by its session ID', async () => {
-    const h = await harness({ limits: NO_HEARTBEAT });
+  it('history with a peer past its offline retention is still available by name and ID, until it is purged', async () => {
+    const h = await harness({ limits: NO_HEARTBEAT_LONG });
     const { shim: a } = await h.shim('host:a');
     await a.register('ALPHA');
     const { shim: b } = await h.shim('host:b');
     await b.register('BETA');
     await a.sendMessage('BETA', 'hello');
     await b.close();
+    await a.next('peers', (f) => f.payload.peers.some((p) => p.id === 'host:b' && !p.connected));
     h.clock.advance(DEFAULT_LIMITS.offlineRetentionMs);
+    for (const peer of ['host:b', 'BETA']) {
+      const re = a.send('thread_request', { peer });
+      expect((await a.next('thread', (f) => f.payload.re === re)).payload.messages.map((m) => m.body)).toEqual(['hello']);
+    }
+    h.clock.advance(DEFAULT_LIMITS.staleRetentionMs);
     await a.next('peers', (f) => f.payload.peers.length === 0);
     const re = a.send('thread_request', { peer: 'host:b' });
-    expect((await a.next('thread', (f) => f.payload.re === re)).payload.messages.map((m) => m.body)).toEqual(['hello']);
+    expect((await a.next('rejected', (f) => f.payload.re === re)).payload.code).toBe('unknown_recipient');
   });
 });
 
@@ -201,7 +224,7 @@ describe('heartbeat', () => {
 describe('snapshot equals replayed deltas', () => {
   it('a UI connected from the start ends with the same state as a fresh snapshot', async () => {
     const ring = 3;
-    const h = await harness({ limits: { ...NO_HEARTBEAT, ringBufferPerThread: ring, offlineRetentionMs: 60_000 } });
+    const h = await harness({ limits: { ...NO_HEARTBEAT, ringBufferPerThread: ring, offlineRetentionMs: 60_000, staleRetentionMs: 60_000 } });
     const { ui } = await h.ui();
 
     const { shim: a } = await h.shim('host:a', { defaultName: 'a@host' });
@@ -227,7 +250,7 @@ describe('snapshot equals replayed deltas', () => {
     await c.sendMessage('ALPHA', 'blocked by mute');
     h.clock.advance(30_000);
 
-    // c disconnects and is removed after retention; b disconnects and an alias takes it over.
+    // c disconnects and is purged after stale retention; b disconnects and an alias takes it over.
     await c.close();
     await a.next('peers', (f) => f.payload.peers.some((p) => p.id === 'host:c' && !p.connected));
     h.clock.advance(60_000);
@@ -251,15 +274,17 @@ describe('snapshot equals replayed deltas', () => {
     fresh.apply(snapshot);
     const snap = snapshot.payload;
     expect(diffUiStates(mirror.state(), fresh.state(), snap.now)).toEqual([]);
-    expect(snap.control).toEqual({ mutedThreads: ['host:a|host:c'], pausedSessions: ['host:b'], pausedAll: false });
+    // The purge of c took the mute on its thread with it.
+    expect(snap.control).toEqual({ mutedThreads: [], pausedSessions: ['host:b'], pausedAll: false });
 
     // The scenario covered what it set out to.
     expect(snap.messages.some((m) => m.seenAt !== undefined)).toBe(true);
     expect(snap.nodes.map((n) => n.id).sort()).toEqual(['host:a', 'host:b']);
     expect(snap.messages.filter((m) => m.threadId === 'host:a|host:b')).toHaveLength(ring);
-    // A removed node's threads and buffered messages stay until the ring buffer drops them.
-    expect(snap.messages.filter((m) => m.threadId === 'host:c|owner').map((m) => m.body)).toEqual(['to owner', 'from owner']);
-    expect(snap.edges.some((e) => e.threadId === 'host:c|owner')).toBe(true);
+    // A purged node's threads, buffered messages and edges are gone.
+    expect(ui.frames.some((f) => f.type === 'node' && f.payload.op === 'remove' && f.payload.id === 'host:c')).toBe(true);
+    expect(snap.messages.some((m) => m.threadId.includes('host:c'))).toBe(false);
+    expect(snap.edges.some((e) => e.threadId.includes('host:c'))).toBe(false);
     // The paused session could still reply to the Owner.
     expect(snap.messages.some((m) => m.body === 'paused reply to owner')).toBe(true);
   });

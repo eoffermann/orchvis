@@ -48,7 +48,8 @@ function toEnvName(limit: string): string {
 
 /**
  * Environment variable for each limit, e.g. `maxBodyBytes` →
- * `ORCHVIS_MAX_BODY_BYTES`, `offlineRetentionMs` → `ORCHVIS_OFFLINE_RETENTION_MS`.
+ * `ORCHVIS_MAX_BODY_BYTES`, `offlineRetentionMs` → `ORCHVIS_OFFLINE_RETENTION_MS`,
+ * `staleRetentionMs` → `ORCHVIS_STALE_RETENTION_MS`.
  */
 export const LIMIT_ENV_VARS: Readonly<Record<keyof Limits, string>> = Object.freeze(
   Object.fromEntries(Object.keys(DEFAULT_LIMITS).map((k) => [k, toEnvName(k)])) as Record<keyof Limits, string>,
@@ -84,6 +85,27 @@ export function mergeLimits(partial: { [K in keyof Limits]?: number | undefined 
     if (v !== undefined) out[key] = v;
   }
   return out;
+}
+
+/**
+ * Checks a full set of limits: each against the schema, then the rules
+ * between them. `staleRetentionMs` must be at least `offlineRetentionMs`,
+ * since a node is purged only after its queue window has passed. Throws an
+ * error naming the limits and their environment variables.
+ */
+export function validateLimits(limits: Limits): void {
+  const parsed = LimitsSchema.safeParse(limits);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    throw new Error(`invalid limits: ${issue ? `${issue.path.join('.')}: ${issue.message}` : 'unknown'}`);
+  }
+  if (limits.staleRetentionMs < limits.offlineRetentionMs) {
+    throw new Error(
+      `invalid limits: staleRetentionMs (${limits.staleRetentionMs} ms, ${LIMIT_ENV_VARS.staleRetentionMs}) must be at least ` +
+        `offlineRetentionMs (${limits.offlineRetentionMs} ms, ${LIMIT_ENV_VARS.offlineRetentionMs}): ` +
+        'a disconnected session is purged only after its queue window has passed',
+    );
+  }
 }
 
 /** Result of {@link loadConfig}. */
@@ -181,8 +203,7 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
     limits: mergeLimits(file.limits),
   };
   const config = applyEnvOverrides(base, env);
-  const limits = LimitsSchema.safeParse(config.limits);
-  if (!limits.success) throw new Error(`invalid limits: ${limits.error.issues[0]?.message ?? 'unknown'}`);
+  validateLimits(config.limits);
   return { config, path, generatedTokens };
 }
 
@@ -193,8 +214,7 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
  */
 export function resolveConfig(input: BrokerConfigInput = {}): BrokerConfig {
   const limits = mergeLimits(input.limits);
-  const parsed = LimitsSchema.safeParse(limits);
-  if (!parsed.success) throw new Error(`invalid limits: ${parsed.error.issues[0]?.message ?? 'unknown'}`);
+  validateLimits(limits);
   return {
     port: input.port ?? 0,
     bind: input.bind ?? '127.0.0.1',
