@@ -1,5 +1,6 @@
 {
   "name": "@orchvis/protocol",
+  "license": "MIT",
   "version": "1.3.0",
   "private": true,
   "description": "Wire schema, limits, error codes and shared functions for orchvis. The contract between broker, shim and web app.",

@@ -1,5 +1,6 @@
 {
   "name": "@orchvis/shim",
+  "license": "MIT",
   "version": "0.1.0",
   "private": true,
   "description": "orchvis MCP shim: one stdio MCP server per Claude Code session, bridging it to the orchvis broker.",

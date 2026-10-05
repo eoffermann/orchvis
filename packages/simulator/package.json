@@ -1,5 +1,6 @@
 {
   "name": "@orchvis/simulator",
+  "license": "MIT",
   "version": "1.0.0",
   "private": true,
   "description": "Fake shims on the real orchvis wire protocol, a traffic generator, and a mock /ws/ui feed for the web app.",

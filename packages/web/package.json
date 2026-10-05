@@ -1,5 +1,6 @@
 {
   "name": "@orchvis/web",
+  "license": "MIT",
   "version": "0.1.0",
   "private": true,
   "description": "orchvis web app: the Owner's live graph of Claude Code sessions.",
