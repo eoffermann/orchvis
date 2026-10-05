@@ -1,10 +1,11 @@
-import { timingSafeEqual } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { monotonicFactory } from 'ulid';
 import {
   OWNER_KEY,
   PROTOCOL_VERSION,
   ShimToBrokerFrameSchema,
   UiToBrokerFrameSchema,
+  WS_CLOSE,
   createFrameFactory,
   decodeFrame,
   encodeFrame,
@@ -40,20 +41,6 @@ import { RollingRateLimiter } from './rate-limit.js';
 import { ThreadStore } from './threads.js';
 import { BROKER_VERSION } from './version.js';
 
-/** WebSocket close codes the broker uses. */
-export const CloseCodes = Object.freeze({
-  /** First frame was not a valid hello. */
-  invalidHello: 4400,
-  /** Wrong shim token. */
-  unauthorized: 4401,
-  /** A newer connection took over this session. */
-  replaced: 4409,
-  /** No traffic within `disconnectAfterMs`. */
-  timeout: 4408,
-  /** Broker shutting down. */
-  shutdown: 1001,
-});
-
 /** A transport connection, as the core sees it: text frames out, and close. */
 export interface Conn {
   /**
@@ -79,6 +66,8 @@ interface ShimLink {
   conn: Conn;
   mk: FrameMaker<BrokerToShimFrame>;
   sessionId: SessionId | undefined;
+  /** This connection's `welcome.uploadKey`; binds HTTP uploads to the session. */
+  uploadKey: string | undefined;
   closed: boolean;
   helloTimer: TimerHandle | undefined;
 }
@@ -201,6 +190,7 @@ export class BrokerCore {
       conn,
       mk: createFrameFactory<BrokerToShimFrame>(`b${++this.shimCounter}-`, () => this.clock.now()),
       sessionId: undefined,
+      uploadKey: undefined,
       closed: false,
       helloTimer: undefined,
     };
@@ -208,7 +198,7 @@ export class BrokerCore {
     link.helloTimer = this.clock.setTimeout(() => {
       if (!link.sessionId && !link.closed) {
         this.logger.log('shim_hello_timeout');
-        this.closeLink(link, CloseCodes.invalidHello, 'no hello');
+        this.closeLink(link, WS_CLOSE.helloRejected, 'no hello');
       }
     }, this.limits.disconnectAfterMs);
     return {
@@ -235,8 +225,8 @@ export class BrokerCore {
   dispose(): void {
     this.clock.clearInterval(this.heartbeat);
     for (const rec of this.nodes.values()) if (rec.removeTimer) this.clock.clearTimeout(rec.removeTimer);
-    for (const link of [...this.shimLinks]) this.closeLink(link, CloseCodes.shutdown, 'broker shutting down');
-    for (const link of [...this.uiLinks]) link.conn.close(CloseCodes.shutdown, 'broker shutting down');
+    for (const link of [...this.shimLinks]) this.closeLink(link, WS_CLOSE.shuttingDown, 'broker shutting down');
+    for (const link of [...this.uiLinks]) link.conn.close(WS_CLOSE.shuttingDown, 'broker shutting down');
     this.uiLinks.clear();
   }
 
@@ -248,12 +238,12 @@ export class BrokerCore {
     if (!link.sessionId) {
       if (!decoded.ok) {
         this.rejectShim(link, decoded.id, 'invalid', decoded.error, 'unknown');
-        this.closeLink(link, CloseCodes.invalidHello, 'invalid hello');
+        this.closeLink(link, WS_CLOSE.helloRejected, 'invalid hello');
         return;
       }
       if (decoded.frame.type !== 'hello') {
         this.rejectShim(link, decoded.frame.id, 'invalid', 'the first frame must be hello', decoded.frame.type);
-        this.closeLink(link, CloseCodes.invalidHello, 'invalid hello');
+        this.closeLink(link, WS_CLOSE.helloRejected, 'invalid hello');
         return;
       }
       this.onHello(link, decoded.frame);
@@ -302,12 +292,12 @@ export class BrokerCore {
     const p = frame.payload;
     if (!timingSafeEqualStr(p.token, this.shimToken)) {
       this.rejectShim(link, frame.id, 'unauthorized', 'shim token not accepted', 'hello');
-      this.closeLink(link, CloseCodes.unauthorized, 'unauthorized');
+      this.closeLink(link, WS_CLOSE.helloRejected, 'unauthorized');
       return;
     }
     if (p.protocolVersion !== PROTOCOL_VERSION) {
       this.rejectShim(link, frame.id, 'invalid', `protocol version ${p.protocolVersion} not supported`, 'hello');
-      this.closeLink(link, CloseCodes.invalidHello, 'protocol version');
+      this.closeLink(link, WS_CLOSE.helloRejected, 'protocol version');
       return;
     }
     if (link.helloTimer) this.clock.clearTimeout(link.helloTimer);
@@ -321,7 +311,7 @@ export class BrokerCore {
       if (rec.link && rec.link !== link) {
         const old = rec.link;
         rec.link = undefined;
-        this.closeLink(old, CloseCodes.replaced, 'replaced by a newer connection');
+        this.closeLink(old, WS_CLOSE.replaced, 'replaced by a newer connection');
       }
       if (rec.removeTimer) this.clock.clearTimeout(rec.removeTimer);
       rec.removeTimer = undefined;
@@ -363,11 +353,14 @@ export class BrokerCore {
     rec.node.connected = true;
     rec.node.lastSeen = now;
     link.sessionId = id;
+    const uploadKey = randomBytes(24).toString('base64url');
+    link.uploadKey = uploadKey;
     this.logger.log('shim_connected', { sessionId: id, name: rec.node.name, reconnect: known, aliasOf: id !== p.sessionId ? p.sessionId : undefined });
     this.sendShim(link, 'welcome', {
       re: frame.id,
       sessionId: id,
       name: rec.node.name,
+      uploadKey,
       limits: { ...this.limits },
       peers: this.peersFor(id),
       brokerVersion: BROKER_VERSION,
@@ -739,7 +732,7 @@ export class BrokerCore {
       if (now - rec.lastHeard >= this.limits.disconnectAfterMs) {
         this.logger.log('heartbeat_timeout', { sessionId: rec.node.id, silentMs: now - rec.lastHeard });
         this.markDisconnected(rec, 'heartbeat timeout');
-        this.closeLink(link, CloseCodes.timeout, 'heartbeat timeout');
+        this.closeLink(link, WS_CLOSE.heartbeatTimeout, 'heartbeat timeout');
       } else {
         this.sendShim(link, 'ping', {});
       }

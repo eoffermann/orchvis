@@ -81,8 +81,9 @@ export function mediaKindOf(mime: string): MediaKind {
 
 /**
  * A short-lived attachment held in the broker's media store. Media is single
- * use: only the connection that uploaded it may attach it, and only to one
- * message. Any other attach is rejected with `invalid`. So each media ID
+ * use: only the uploader may attach it (the session whose upload key was on
+ * the upload, or the Owner for an upload with the Owner cookie), and only to
+ * one message. Any other attach is rejected with `invalid`. So each media ID
  * belongs to exactly one message and one thread.
  */
 export const MediaRefSchema = z.object({

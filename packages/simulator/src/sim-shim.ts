@@ -1,7 +1,12 @@
 import { EventEmitter } from 'node:events';
 import {
   BrokerToShimFrameSchema,
+  MEDIA_CAPTION_FIELD,
+  MEDIA_FILE_FIELD,
+  MEDIA_PATH,
   MediaRefSchema,
+  SHIM_TOKEN_HEADER,
+  UPLOAD_KEY_HEADER,
   PROTOCOL_VERSION,
   SHIM_WS_PATH,
   ShimToBrokerFrameSchema,
@@ -154,6 +159,8 @@ export class SimShim extends EventEmitter {
   name: string | undefined;
   /** Limits from the last `welcome`. */
   limits: Limits | undefined;
+  /** Upload key from the last `welcome`, sent on media uploads. */
+  uploadKey: string | undefined;
   /** Latest peer list. */
   peers: PeerInfo[] = [];
   /** The persona in force. */
@@ -310,6 +317,7 @@ export class SimShim extends EventEmitter {
         this.sessionId = frame.payload.sessionId;
         this.name = frame.payload.name;
         this.limits = frame.payload.limits;
+        this.uploadKey = frame.payload.uploadKey;
         this.peers = frame.payload.peers;
         this.onWelcome();
         break;
@@ -550,11 +558,13 @@ export class SimShim extends EventEmitter {
   async uploadMedia(sample: Pick<MediaSample, 'data' | 'mime' | 'filename' | 'caption'>): Promise<MediaRef> {
     const u = new URL(this.url);
     u.protocol = u.protocol === 'wss:' ? 'https:' : 'http:';
-    u.pathname = '/api/media';
+    u.pathname = MEDIA_PATH;
+    if (!this.uploadKey) throw new Error('upload failed: no upload key yet (not welcomed)');
     const form = new FormData();
-    form.append('file', new Blob([sample.data as Uint8Array<ArrayBuffer>], { type: sample.mime }), sample.filename);
-    form.append('caption', sample.caption);
-    const res = await fetch(u, { method: 'POST', headers: { 'X-Orchvis-Token': this.opts.token }, body: form });
+    form.append(MEDIA_FILE_FIELD, new Blob([sample.data as Uint8Array<ArrayBuffer>], { type: sample.mime }), sample.filename);
+    form.append(MEDIA_CAPTION_FIELD, sample.caption);
+    const headers = { [SHIM_TOKEN_HEADER]: this.opts.token, [UPLOAD_KEY_HEADER]: this.uploadKey };
+    const res = await fetch(u, { method: 'POST', headers, body: form });
     if (!res.ok) throw new Error(`upload failed: HTTP ${res.status}`);
     const ref = MediaRefSchema.safeParse(await res.json());
     if (!ref.success) throw new Error(`upload returned an invalid MediaRef: ${ref.error.issues[0]?.message ?? ''}`);

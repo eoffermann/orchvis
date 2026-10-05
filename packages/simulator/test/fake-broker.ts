@@ -132,7 +132,7 @@ export async function startFakeBroker(options: FakeBrokerOptions = {}) {
             connected: true,
             lastSeen: Date.now(),
           };
-          send(c, c.mk('welcome', { re: f.id, sessionId: p.sessionId, name: p.defaultName, limits, peers: peersOf(c), brokerVersion: 'fake', protocolVersion: 1 }));
+          send(c, c.mk('welcome', { re: f.id, sessionId: p.sessionId, name: p.defaultName, uploadKey: `fake-upload-key-${f.id}`, limits, peers: peersOf(c), brokerVersion: 'fake', protocolVersion: 1 }));
           break;
         }
         case 'register': {
