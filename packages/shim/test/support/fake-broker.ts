@@ -1,7 +1,9 @@
 /**
  * A fake orchvis broker for shim integration tests: a `ws` server on an
  * ephemeral port that speaks the protocol frames (validated with the protocol
- * schemas), plus `POST /api/media` and `GET /api/media/:id`.
+ * schemas), plus `POST MEDIA_PATH` and `GET MEDIA_PATH/:id`, authenticated by
+ * the protocol's `SHIM_TOKEN_HEADER`. A rejected `hello` is followed by a close
+ * with `WS_CLOSE.helloRejected`, as the real broker does.
  *
  * Tests that only need a broker to talk to should depend on {@link TestBroker},
  * which matches the real broker's planned `startBroker({ port: 0 })` seam, so
@@ -14,8 +16,11 @@ import type { AddressInfo } from 'node:net';
 import { WebSocketServer, type WebSocket } from 'ws';
 import {
   DEFAULT_LIMITS,
+  MEDIA_PATH,
   PROTOCOL_VERSION,
+  SHIM_TOKEN_HEADER,
   SHIM_WS_PATH,
+  WS_CLOSE,
   ShimToBrokerFrameSchema,
   createFrameFactory,
   decodeFrame,
@@ -75,6 +80,12 @@ export interface FakeBroker extends TestBroker {
   aliasOnRegister: string | undefined;
   /** Uploaded media by ID. */
   uploads: Map<string, { ref: MediaRef; data: Buffer }>;
+  /** Rejects every `hello` (with a valid token) with this code, then closes with `WS_CLOSE.helloRejected`. */
+  rejectHellosWith: RejectCode | undefined;
+  /** Number of WebSocket connections opened so far. */
+  readonly connectionCount: number;
+  /** Closes every shim connection with a close code, e.g. `WS_CLOSE.shuttingDown`. */
+  closeConnections(code: number): void;
 }
 
 /** Options for {@link startFakeBroker}. */
@@ -99,8 +110,9 @@ export async function startFakeBroker(options: FakeBrokerOptions = {}): Promise<
   let helloCount = 0;
   let nextReject: { code: RejectCode; detail: string } | undefined;
 
-  const state: Pick<FakeBroker, 'aliasOnRegister' | 'peers' | 'limits'> = {
+  const state: Pick<FakeBroker, 'aliasOnRegister' | 'peers' | 'limits' | 'rejectHellosWith'> = {
     aliasOnRegister: undefined,
+    rejectHellosWith: undefined,
     peers: options.peers ?? [],
     limits,
   };
@@ -108,8 +120,9 @@ export async function startFakeBroker(options: FakeBrokerOptions = {}): Promise<
   const http = createServer((req, res) => void handleHttp(req, res));
   const wss = new WebSocketServer({ server: http, path: SHIM_WS_PATH });
 
+  // Checked against the protocol constants, not the shim's helper, so the two cannot drift together.
   function authorized(req: IncomingMessage): boolean {
-    return req.headers['authorization'] === `Bearer ${shimToken}`;
+    return req.headers[SHIM_TOKEN_HEADER] === shimToken;
   }
 
   async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -118,8 +131,8 @@ export async function startFakeBroker(options: FakeBrokerOptions = {}): Promise<
       res.writeHead(401).end('unauthorized');
       return;
     }
-    if (req.method === 'POST' && url.pathname === '/api/media') {
-      const request = new Request('http://x/api/media', {
+    if (req.method === 'POST' && url.pathname === MEDIA_PATH) {
+      const request = new Request(`http://x${MEDIA_PATH}`, {
         method: 'POST',
         headers: req.headers as Record<string, string>,
         body: req as unknown as ReadableStream,
@@ -146,9 +159,9 @@ export async function startFakeBroker(options: FakeBrokerOptions = {}): Promise<
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(ref));
       return;
     }
-    const match = /^\/api\/media\/([^/]+)$/.exec(url.pathname);
-    if (req.method === 'GET' && match) {
-      const item = uploads.get(decodeURIComponent(match[1]!));
+    const prefix = `${MEDIA_PATH}/`;
+    if (req.method === 'GET' && url.pathname.startsWith(prefix) && !url.pathname.slice(prefix.length).includes('/')) {
+      const item = uploads.get(decodeURIComponent(url.pathname.slice(prefix.length)));
       if (!item) {
         res.writeHead(404).end('not found');
         return;
@@ -169,7 +182,9 @@ export async function startFakeBroker(options: FakeBrokerOptions = {}): Promise<
     return { kind: 'session', id: peer?.id ?? (to.includes(':') ? to : `peerhost:${to}`) };
   }
 
+  let connectionCount = 0;
   wss.on('connection', (ws) => {
+    connectionCount++;
     const conn = { sessionId: '', mk: createFrameFactory<BrokerToShimFrame>('b') };
     ws.on('message', (data) => {
       const raw = data.toString();
@@ -185,9 +200,15 @@ export async function startFakeBroker(options: FakeBrokerOptions = {}): Promise<
       const mk = conn.mk;
       switch (frame.type) {
         case 'hello': {
-          if (frame.payload.token !== shimToken) {
-            send(ws, mk('rejected', { re: frame.id, code: 'unauthorized', detail: 'bad token' }));
-            ws.close();
+          const helloReject: { code: RejectCode; detail: string } | undefined =
+            frame.payload.token !== shimToken
+              ? { code: 'unauthorized', detail: 'bad token' }
+              : state.rejectHellosWith
+                ? { code: state.rejectHellosWith, detail: 'test rejection' }
+                : undefined;
+          if (helloReject) {
+            send(ws, mk('rejected', { re: frame.id, ...helloReject }));
+            ws.close(WS_CLOSE.helloRejected, helloReject.code);
             return;
           }
           helloCount++;
@@ -298,6 +319,18 @@ export async function startFakeBroker(options: FakeBrokerOptions = {}): Promise<
     },
     get aliasOnRegister() {
       return state.aliasOnRegister;
+    },
+    set rejectHellosWith(value) {
+      state.rejectHellosWith = value;
+    },
+    get rejectHellosWith() {
+      return state.rejectHellosWith;
+    },
+    get connectionCount() {
+      return connectionCount;
+    },
+    closeConnections(code) {
+      for (const ws of wss.clients) ws.close(code);
     },
     set aliasOnRegister(value) {
       state.aliasOnRegister = value;

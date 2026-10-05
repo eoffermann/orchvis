@@ -5,16 +5,22 @@ import { tmpdir } from 'node:os';
 import { basename, extname, isAbsolute, join, resolve } from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { MediaRefSchema, sanitizeText, utf8Bytes, type Limits, type MediaRef } from '@orchvis/protocol';
+import {
+  MEDIA_PATH,
+  MediaRefSchema,
+  SHIM_TOKEN_HEADER,
+  sanitizeText,
+  utf8Bytes,
+  type Limits,
+  type MediaRef,
+} from '@orchvis/protocol';
 import { fileSafe } from './identity.js';
 import type { Logger } from './log.js';
 
-/**
- * Header that carries the shim token on `/api/media` requests, as
- * `Bearer <token>`. The plan says "shim token header" without naming one; the
- * protocol package does not define it yet.
- */
-export const SHIM_TOKEN_HEADER = 'authorization';
+/** Headers that authenticate a shim on the broker's HTTP endpoints. The single place that builds them. */
+export function shimAuthHeaders(token: string): Record<string, string> {
+  return { [SHIM_TOKEN_HEADER]: token };
+}
 
 /** Formats a path with forward slashes, the `C:/Users/...` form on Windows. */
 export function toForwardSlashes(path: string): string {
@@ -153,13 +159,13 @@ export async function uploadMedia(
   form.append('file', blob, name);
   let response: Response;
   try {
-    response = await fetch(`${endpoint.httpBase}/api/media`, {
+    response = await fetch(`${endpoint.httpBase}${MEDIA_PATH}`, {
       method: 'POST',
-      headers: { [SHIM_TOKEN_HEADER]: `Bearer ${endpoint.token}` },
+      headers: shimAuthHeaders(endpoint.token),
       body: form,
     });
   } catch (err) {
-    throw new MediaError('upload_failed', `upload to ${endpoint.httpBase}/api/media failed: ${(err as Error).message}`);
+    throw new MediaError('upload_failed', `upload to ${endpoint.httpBase}${MEDIA_PATH} failed: ${(err as Error).message}`);
   }
   const text = await response.text();
   if (!response.ok) {
@@ -227,10 +233,10 @@ export class MediaStore {
 
     await mkdir(this.dir, { recursive: true });
     const absPath = this.pathFor(ref);
-    const url = `${endpoint.httpBase}/api/media/${encodeURIComponent(ref.mediaId)}`;
+    const url = `${endpoint.httpBase}${MEDIA_PATH}/${encodeURIComponent(ref.mediaId)}`;
     let response: Response;
     try {
-      response = await fetch(url, { headers: { [SHIM_TOKEN_HEADER]: `Bearer ${endpoint.token}` } });
+      response = await fetch(url, { headers: shimAuthHeaders(endpoint.token) });
     } catch (err) {
       throw new MediaError('download_failed', `download from ${url} failed: ${(err as Error).message}`);
     }

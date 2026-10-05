@@ -8,7 +8,7 @@ import { createServer } from 'node:net';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { PROTOCOL_VERSION, type PeerInfo } from '@orchvis/protocol';
+import { PROTOCOL_VERSION, WS_CLOSE, type PeerInfo } from '@orchvis/protocol';
 import { SHIM_VERSION } from '../src/version.js';
 import { startFakeBroker, type FakeBroker } from './support/fake-broker.js';
 import { makeMessage, makeRef } from './support/messages.js';
@@ -334,13 +334,44 @@ describe('with a broker', () => {
     expect(body).toMatchObject({ mime: 'image/png', caption: 'The render' });
   });
 
-  it('rejects a bad token and reports it through broker_unreachable', async () => {
+  it('a rejected token (unauthorized + 4400) stops reconnecting and tools say how to fix it', async () => {
     const b = await broker();
     const s = await shim({ brokerUrl: b.url, token: 'wrong-token' });
     await b.waitFor('hello');
     await sleep(200);
     const r = await s.call('list_peers');
     expect(r.isError).toBe(true);
-    expect(r.text).toMatch(/^broker_unreachable: .*unauthorized/);
+    expect(r.text).toMatch(/^broker_unreachable: .*\(token rejected by broker; fix ~\/\.orchvis\/config\.json\)/);
+    // The first backoff is at most 1 s; well past it there must be no second attempt.
+    await sleep(2500);
+    expect(b.connectionCount).toBe(1);
+    expect(s.stderr()).toMatch(/not reconnecting: the broker rejected the shim token/);
+  });
+
+  it('any other hello rejection keeps backing off and retrying', async () => {
+    const b = await broker();
+    b.rejectHellosWith = 'invalid';
+    const s = await shim({ brokerUrl: b.url, token: b.shimToken });
+    await b.waitFor('hello');
+    for (let i = 0; i < 100 && b.connectionCount < 2; i++) await sleep(50);
+    expect(b.connectionCount).toBeGreaterThanOrEqual(2);
+    const r = await s.call('list_peers');
+    expect(r.text).toMatch(/^broker_unreachable: .*invalid/);
+    b.rejectHellosWith = undefined;
+    for (let i = 0; i < 200 && !(await s.call('list_peers')).text.includes('PEER'); i++) await sleep(50);
+    expect((await s.call('list_peers')).isError).toBe(false);
+  });
+
+  it('a shuttingDown close (4503) reconnects with backoff', async () => {
+    const b = await broker();
+    const s = await shim({ brokerUrl: b.url, token: b.shimToken });
+    await b.waitFor('hello');
+    for (let i = 0; i < 100 && (await s.call('list_peers')).isError; i++) await sleep(50);
+    const mark = b.received.length;
+    b.closeConnections(WS_CLOSE.shuttingDown);
+    await sleep(100);
+    const down = await s.call('list_peers');
+    expect(down.text).toMatch(/^broker_unreachable: .*shutting down/);
+    await b.waitFor('hello', undefined, { from: mark, timeoutMs: 5000 });
   });
 });

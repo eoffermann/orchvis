@@ -4,6 +4,7 @@ import {
   DEFAULT_LIMITS,
   PROTOCOL_VERSION,
   REJECT_EXPLANATIONS,
+  WS_CLOSE,
   createFrameFactory,
   decodeFrame,
   encodeFrame,
@@ -38,6 +39,13 @@ export type RegisteredPayload = PayloadOf<BrokerToShimFrame, 'registered'>;
 
 /** A `rejected` frame's payload. */
 export type RejectedPayload = PayloadOf<BrokerToShimFrame, 'rejected'>;
+
+/**
+ * Reason reported once the broker has rejected the shim token: `hello` was
+ * rejected as `unauthorized` and the socket closed with
+ * `WS_CLOSE.helloRejected`. The client stops reconnecting after that.
+ */
+export const TOKEN_REJECTED = 'token rejected by broker; fix ~/.orchvis/config.json';
 
 /** Thrown when a request needs the broker and there is no live session with it. */
 export class BrokerUnreachableError extends Error {
@@ -131,6 +139,7 @@ export class BrokerClient {
   private lastInbound = 0;
   private stopped = true;
   private lastError = 'connecting';
+  private helloRejectCode: RejectCode | undefined;
   private lastRegister: RegisterPayload | undefined;
   private lastStatus: StatusPayload | undefined;
   private canonicalId: string;
@@ -300,10 +309,22 @@ export class BrokerClient {
     ws.on('close', (code) => {
       if (ws !== this.ws) return;
       const wasReady = this.welcome !== undefined;
-      if (wasReady) this.lastError = `connection closed (${code})`;
+      const tokenRejected = code === WS_CLOSE.helloRejected && this.helloRejectCode === 'unauthorized';
+      if (tokenRejected) {
+        this.lastError = TOKEN_REJECTED;
+      } else if (wasReady) {
+        this.lastError = code === WS_CLOSE.shuttingDown ? 'broker is shutting down' : `connection closed (${code})`;
+      }
+      this.helloRejectCode = undefined;
       this.teardown(this.lastError);
       log.info(`broker connection closed (${code}); ${this.lastError}`);
       if (wasReady) this.opts.onDisconnect?.(this.lastError);
+      if (tokenRejected) {
+        // A wrong token will not fix itself; stay down until the shim restarts with a new config.
+        this.stopped = true;
+        log.warn('not reconnecting: the broker rejected the shim token');
+        return;
+      }
       this.scheduleReconnect();
     });
   }
@@ -332,6 +353,7 @@ export class BrokerClient {
         return;
       case 'rejected':
         if (frame.payload.re && frame.payload.re === this.helloId) {
+          this.helloRejectCode = frame.payload.code;
           this.lastError = `broker rejected hello: ${explainRejection(frame.payload)}`;
           this.opts.log.warn(this.lastError);
           return;
