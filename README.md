@@ -15,9 +15,36 @@
 
 ---
 
-When a dozen Claude Code sessions work on related code at the same time (a web front end, the API it calls, the mobile app, the CI that builds all three), they need to talk to each other: "I renamed this field", "your build fails because of my change", "can you rerun that test". Done ad hoc, that conversation is invisible and hard to steer.
+## This is not a subagent orchestrator
 
-orchvis routes all of it through one broker on your LAN. Each session gets a small MCP server (the *shim*) that lets it register, find peers and send messages. You, the **Owner**, watch every message live in the browser: sessions are nodes, repositories are hulls, and traffic pulses along the edges between them. Click any session to talk to it directly; click any edge to read the thread.
+Most multi-agent tooling has the same shape: one orchestrator at the top, a swarm of subagents under it. The orchestrator hands out tasks, the subagents report back, and nothing moves sideways between them. That shape works well for splitting one job into parallel pieces. Claude Code's own subagents already do it, and orchvis doesn't replace them.
+
+orchvis works one level up. Each node in the graph is a complete Claude Code session: a lead agent with its own context and its own repo, and usually its own swarm of subagents. The web lead, the payments-API lead, the mobile lead and the CI lead are peers, and they have to work things out with each other. A schema change in one repo breaks a build in another, and the sessions involved need to talk it through directly instead of routing every exchange through you.
+
+```mermaid
+flowchart LR
+  subgraph SW["Subagent swarm: one team"]
+    direction TB
+    O["Orchestrator"] --> s1["subagent"]
+    O --> s2["subagent"]
+    O --> s3["subagent"]
+  end
+  subgraph TT["orchvis: a team of teams"]
+    direction TB
+    L1["Lead session<br/>storefront-web"] <--> L2["Lead session<br/>payments-api"]
+    L2 <--> L3["Lead session<br/>platform-infra"]
+    L1 <--> L3
+    L1 --> a1["its own subagents"]
+    L2 --> a2["its own subagents"]
+    L3 --> a3["its own subagents"]
+  end
+```
+
+That means far more work gets done in parallel, and far more for one engineer to keep track of. Thirty leads, each running its own swarm, generate more cross-team conversation than anyone can follow from a row of terminals. orchvis gives you the view and the controls for it: see who is talking to whom, read any thread, step into any conversation, and mute or pause traffic when it gets out of hand.
+
+## What orchvis does
+
+orchvis routes all of that conversation through one broker on your LAN. Each session gets a small MCP server (the *shim*) that lets it register, find peers and send messages. You, the **Owner**, watch every message live in the browser: sessions are nodes, repositories are hulls, and traffic pulses along the edges between them. Click any session to talk to it directly; click any edge to read the thread.
 
 - **Every cross-session message is visible.** The broker stamps who sent it, so a session can tell the Owner's instructions from a peer's request, and peers cannot fake either.
 - **Works across machines and operating systems.** Windows and macOS sessions on the same LAN share one graph. Session machines only dial out; they need no open ports.
