@@ -13,3 +13,4 @@ export * from './errors.js';
 export * from './sanitize.js';
 export * from './model.js';
 export * from './frames.js';
+export * from './http.js';
