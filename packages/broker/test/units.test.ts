@@ -2,15 +2,17 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'no
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { IncomingMessage } from 'node:http';
+import type { IncomingHttpHeaders } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
-import { DEFAULT_LIMITS, weightAt, type Message } from '@orchvis/protocol';
+import { DEFAULT_LIMITS, WS_CLOSE, weightAt, type Message } from '@orchvis/protocol';
 import {
   LIMIT_ENV_VARS,
+  MAX_OWNER_SESSIONS,
   ManualClock,
+  OwnerSessions,
   RollingRateLimiter,
   ThreadStore,
-  authorizeUi,
+  uiUpgradeVerdict,
   checkPortFree,
   createLogger,
   loadConfig,
@@ -165,13 +167,35 @@ describe('config', () => {
 });
 
 describe('UI auth', () => {
-  const req = (cookie?: string) => ({ headers: cookie === undefined ? {} : { cookie } }) as IncomingMessage;
-  it('accepts only the owner token in the orchvis_owner cookie', () => {
-    expect(authorizeUi(req(`orchvis_owner=${'t'.repeat(40)}`), 't'.repeat(40))).toBe(true);
-    expect(authorizeUi(req(`a=b; orchvis_owner=${encodeURIComponent('t+/=')}`), 't+/=')).toBe(true);
-    expect(authorizeUi(req(), 'tok')).toBe(false);
-    expect(authorizeUi(req('orchvis_owner=wrong'), 'tok')).toBe(false);
-    expect(authorizeUi(req('orchvis_owner_x=tok'), 'tok')).toBe(false);
+  const headers = (h: IncomingHttpHeaders) => h;
+  it('needs a matching Origin first, then a live session in the orchvis_owner cookie', () => {
+    const sessions = new OwnerSessions();
+    const id = sessions.create();
+    const host = '10.0.0.5:7801';
+    const ok = headers({ host, origin: `http://${host}`, cookie: `a=b; orchvis_owner=${id}` });
+    expect(uiUpgradeVerdict(ok, sessions)).toEqual({ ok: true, ownerSession: id });
+    expect(uiUpgradeVerdict(headers({ ...ok, origin: 'HTTP://10.0.0.5:7801' }), sessions).ok).toBe(true);
+    const code = (h: IncomingHttpHeaders) => {
+      const v = uiUpgradeVerdict(headers(h), sessions);
+      return v.ok ? 'ok' : v.code;
+    };
+    expect(code({ host, cookie: `orchvis_owner=${id}` })).toBe(WS_CLOSE.forbiddenOrigin);
+    expect(code({ host, origin: 'http://evil.example', cookie: `orchvis_owner=${id}` })).toBe(WS_CLOSE.forbiddenOrigin);
+    expect(code({ host, origin: `https://${host}`, cookie: `orchvis_owner=${id}` })).toBe(WS_CLOSE.forbiddenOrigin);
+    expect(code({ origin: `http://${host}`, cookie: `orchvis_owner=${id}` })).toBe(WS_CLOSE.forbiddenOrigin);
+    expect(code({ host, origin: `http://${host}` })).toBe(WS_CLOSE.unauthorized);
+    expect(code({ host, origin: `http://${host}`, cookie: 'orchvis_owner=forged' })).toBe(WS_CLOSE.unauthorized);
+    expect(code({ host, origin: `http://${host}`, cookie: `orchvis_owner_x=${id}` })).toBe(WS_CLOSE.unauthorized);
+    sessions.delete(id);
+    expect(code({ host, origin: `http://${host}`, cookie: `orchvis_owner=${id}` })).toBe(WS_CLOSE.unauthorized);
+  });
+
+  it('keeps at most MAX_OWNER_SESSIONS sessions, dropping the oldest', () => {
+    const sessions = new OwnerSessions();
+    const first = sessions.create();
+    for (let i = 0; i < MAX_OWNER_SESSIONS; i++) sessions.create();
+    expect(sessions.size).toBe(MAX_OWNER_SESSIONS);
+    expect(sessions.fromHeaders({ cookie: `orchvis_owner=${first}` })).toBeUndefined();
   });
 
   it('parses cookies and compares secrets safely', () => {

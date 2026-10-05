@@ -15,9 +15,13 @@ import {
   threadIdFor,
   toPeerInfo,
   utf8Bytes,
+  addressKey,
+  threadParticipants,
   MAX_NAME_LENGTH,
+  MEDIA_SWEEP_INTERVAL_MS,
   OWNER_ADDRESS,
   type Address,
+  type MediaRef,
   type BrokerToShimFrame,
   type BrokerToUiFrame,
   type ControlAction,
@@ -37,6 +41,7 @@ import {
 } from '@orchvis/protocol';
 import type { Clock, TimerHandle } from './clock.js';
 import type { Logger } from './log.js';
+import { indexEntry, type MediaStore, type MediaUploader, type StoredMedia } from './media.js';
 import { RollingRateLimiter } from './rate-limit.js';
 import { ThreadStore } from './threads.js';
 import { BROKER_VERSION } from './version.js';
@@ -75,6 +80,8 @@ interface ShimLink {
 interface UiLink {
   conn: Conn;
   mk: FrameMaker<BrokerToUiFrame>;
+  /** The Owner login session this connection was opened with; logout closes it. */
+  ownerSession: string | undefined;
 }
 
 interface NodeRecord {
@@ -132,6 +139,10 @@ export class BrokerCore {
   private readonly control = { mutedThreads: new Set<string>(), pausedSessions: new Set<SessionId>(), pausedAll: false };
   private readonly newId: (seedTime?: number) => string = monotonicFactory();
   private readonly heartbeat: TimerHandle;
+  private readonly mediaSweep: TimerHandle;
+  /** Upload keys of open, welcomed shim connections. */
+  private readonly uploadKeys = new Map<string, ShimLink>();
+  private readonly uploadLimiter: RollingRateLimiter;
   private uiCounter = 0;
   private shimCounter = 0;
 
@@ -139,17 +150,21 @@ export class BrokerCore {
    * @param limits - Limits in force; sent to shims and the web app.
    * @param shimToken - Token every `hello` must carry.
    * @param clock - Time source and timers.
-   * @param logger - Structured logger. Never given bodies or tokens.
+   * @param logger - Structured logger. Never given bodies, captions, filenames or tokens.
+   * @param media - The media store; the core expires, evicts and attaches its items.
    */
   constructor(
     readonly limits: Limits,
     private readonly shimToken: string,
     private readonly clock: Clock,
     private readonly logger: Logger,
+    readonly media: MediaStore,
   ) {
     this.threads = new ThreadStore(limits.ringBufferPerThread, limits.edgeTauMs);
     this.limiter = new RollingRateLimiter(limits.sendRatePerMinute);
+    this.uploadLimiter = new RollingRateLimiter(limits.sendRatePerMinute);
     this.heartbeat = clock.setInterval(() => this.heartbeatTick(), limits.heartbeatIntervalMs);
+    this.mediaSweep = clock.setInterval(() => this.sweepMedia(), MEDIA_SWEEP_INTERVAL_MS);
   }
 
   // ---------------------------------------------------------------- public
@@ -178,10 +193,116 @@ export class BrokerCore {
       nodes: [...this.nodes.values()].map((r) => ({ ...r.node })),
       edges: this.threads.allEdges(),
       messages: this.threads.allMessages().map((m) => ({ ...m })),
-      media: [],
+      media: this.media.index(),
       control: this.controlState(),
-      mediaStore: { bytes: 0, capBytes: this.limits.mediaStoreBytes, files: 0 },
+      mediaStore: this.media.usage(),
     };
+  }
+
+  // --------------------------------------------------------------- media
+
+  /** The session behind an open shim connection's upload key, or undefined for an unknown or closed one. */
+  sessionForUploadKey(key: string): SessionId | undefined {
+    const link = this.uploadKeys.get(key);
+    return link && !link.closed ? link.sessionId : undefined;
+  }
+
+  /**
+   * Counts one upload against the uploader's per-minute allowance
+   * (`sendRatePerMinute` uploads per session, and for the Owner). Returns
+   * false, counting nothing, when the allowance is used up.
+   */
+  tryUpload(uploader: MediaUploader): boolean {
+    const key = uploader.kind === 'owner' ? OWNER_KEY : `s\u0000${this.resolveId(uploader.id)}`;
+    return this.uploadLimiter.tryAcquire(key, this.clock.now());
+  }
+
+  /** Adds a fully written upload to the store, then evicts the oldest files while the store is over its cap. */
+  mediaStored(entry: StoredMedia): void {
+    this.media.add(entry);
+    this.logger.log('media_uploaded', {
+      mediaId: entry.ref.mediaId,
+      uploader: entry.uploader.kind === 'owner' ? OWNER_KEY : entry.uploader.id,
+      bytes: entry.ref.bytes,
+      mime: entry.ref.mime,
+      storeBytes: this.media.bytes,
+      storeFiles: this.media.files,
+    });
+    this.evictOverCap(entry.ref.mediaId);
+  }
+
+  /**
+   * Whether a session may download a media item: only a participant in the
+   * thread it was attached to. Unattached media is readable by the Owner only.
+   */
+  sessionMayRead(sessionId: SessionId, entry: StoredMedia): boolean {
+    if (!entry.attachment) return false;
+    const me = addressKey(sessionAddress(this.resolveId(sessionId)));
+    return threadParticipants(entry.attachment.threadId).some((p) => addressKey(p) === me);
+  }
+
+  /** Expires every item whose TTL has run out, then evicts over the cap. Runs every {@link MEDIA_SWEEP_INTERVAL_MS}. */
+  sweepMedia(): void {
+    for (const e of this.media.expiredAt(this.clock.now())) this.dropMedia(e, 'ttl');
+    this.evictOverCap(undefined);
+  }
+
+  private evictOverCap(keep: string | undefined): void {
+    for (const e of this.media.evictionVictims(keep)) this.dropMedia(e, 'evicted');
+  }
+
+  /** Removes an item and its file; for attached items, decrements the edge and tells the web app. */
+  private dropMedia(entry: StoredMedia, reason: 'ttl' | 'evicted'): void {
+    if (!this.media.remove(entry.ref.mediaId)) return;
+    this.logger.log(reason === 'ttl' ? 'media_expired' : 'media_evicted', {
+      mediaId: entry.ref.mediaId,
+      bytes: entry.ref.bytes,
+      attached: entry.attachment !== undefined,
+      storeBytes: this.media.bytes,
+      storeFiles: this.media.files,
+    });
+    const at = entry.attachment;
+    if (!at) return;
+    const edge = this.threads.adjustMedia(at.threadId, entry.kind, -1);
+    if (!edge) return;
+    this.broadcastUi('media', { op: 'expire', mediaId: entry.ref.mediaId, threadId: at.threadId, edge, mediaStore: this.media.usage() });
+  }
+
+  /**
+   * Checks a send's attachment IDs without changing anything: each must
+   * exist, be unexpired, have been uploaded by `uploader`, and not be
+   * attached yet, and none may repeat. Throws `invalid` otherwise.
+   */
+  private checkAttachments(uploader: MediaUploader, ids: string[]): StoredMedia[] {
+    const now = this.clock.now();
+    const seen = new Set<string>();
+    const out: StoredMedia[] = [];
+    for (const id of ids) {
+      const e = this.media.get(id);
+      const mine =
+        e !== undefined &&
+        (uploader.kind === 'owner'
+          ? e.uploader.kind === 'owner'
+          : e.uploader.kind === 'session' && this.resolveId(e.uploader.id) === this.resolveId(uploader.id));
+      if (!e || !mine || seen.has(id) || e.attachment || e.ref.expiresAt <= now) {
+        throw new Rejection('invalid', 'unknown, expired, foreign or already attached media id');
+      }
+      seen.add(id);
+      out.push(e);
+    }
+    return out;
+  }
+
+  /** Marks checked attachments as used by `message`, and announces each after the `message` delta. */
+  private commitAttachments(message: Message, items: StoredMedia[]): void {
+    for (const e of items) {
+      e.attachment = { threadId: message.threadId, messageId: message.id, from: { ...message.from }, ts: message.ts };
+      const edge = this.threads.adjustMedia(message.threadId, e.kind, 1);
+      const entry = indexEntry(e);
+      if (!edge || !entry) continue;
+      this.logger.log('media_attached', { mediaId: e.ref.mediaId, messageId: message.id, threadId: message.threadId });
+      this.broadcastUi('media', { op: 'add', entry, edge, mediaStore: this.media.usage() });
+    }
   }
 
   /** Accepts a new `/ws/shim` connection. The first frame must be `hello`. */
@@ -207,9 +328,20 @@ export class BrokerCore {
     };
   }
 
-  /** Accepts a new, already authorized `/ws/ui` connection and sends it the snapshot. */
-  openUi(conn: Conn): ConnHandler {
-    const link: UiLink = { conn, mk: createFrameFactory<BrokerToUiFrame>(`u${++this.uiCounter}-`, () => this.clock.now()) };
+  /**
+   * Accepts a new, already authorized `/ws/ui` connection and sends it the
+   * snapshot. Media past its TTL is swept first, so existing connections get
+   * its `expire` and the snapshot never lists it.
+   *
+   * @param ownerSession - The Owner login session behind the connection; {@link BrokerCore.endOwnerSession} closes it.
+   */
+  openUi(conn: Conn, ownerSession?: string): ConnHandler {
+    this.sweepMedia();
+    const link: UiLink = {
+      conn,
+      mk: createFrameFactory<BrokerToUiFrame>(`u${++this.uiCounter}-`, () => this.clock.now()),
+      ownerSession,
+    };
     this.uiLinks.add(link);
     this.logger.log('ui_connected', { uiClients: this.uiLinks.size });
     this.sendUi(link, 'snapshot', this.snapshot());
@@ -221,9 +353,19 @@ export class BrokerCore {
     };
   }
 
+  /** Closes every `/ws/ui` connection opened with this Owner login session, with `WS_CLOSE.unauthorized`. */
+  endOwnerSession(ownerSession: string): void {
+    for (const link of [...this.uiLinks]) {
+      if (link.ownerSession !== ownerSession) continue;
+      this.uiLinks.delete(link);
+      link.conn.close(WS_CLOSE.unauthorized, 'logged out');
+    }
+  }
+
   /** Stops timers and closes every connection. */
   dispose(): void {
     this.clock.clearInterval(this.heartbeat);
+    this.clock.clearInterval(this.mediaSweep);
     for (const rec of this.nodes.values()) if (rec.removeTimer) this.clock.clearTimeout(rec.removeTimer);
     for (const link of [...this.shimLinks]) this.closeLink(link, WS_CLOSE.shuttingDown, 'broker shutting down');
     for (const link of [...this.uiLinks]) link.conn.close(WS_CLOSE.shuttingDown, 'broker shutting down');
@@ -355,6 +497,7 @@ export class BrokerCore {
     link.sessionId = id;
     const uploadKey = randomBytes(24).toString('base64url');
     link.uploadKey = uploadKey;
+    this.uploadKeys.set(uploadKey, link);
     this.logger.log('shim_connected', { sessionId: id, name: rec.node.name, reconnect: known, aliasOf: id !== p.sessionId ? p.sessionId : undefined });
     this.sendShim(link, 'welcome', {
       re: frame.id,
@@ -436,7 +579,8 @@ export class BrokerCore {
 
   private onSend(link: ShimLink, rec: NodeRecord, frame: FrameOf<ShimToBrokerFrame, 'send'>): void {
     const p = frame.payload;
-    this.checkDraft(p.body, p.attachments);
+    this.checkBody(p.body);
+    const media = this.checkAttachments({ kind: 'session', id: rec.node.id }, p.attachments);
     const target = this.resolveTarget(p.to);
     const to = this.targetAddress(target, p.to);
     const from = sessionAddress(rec.node.id);
@@ -452,8 +596,9 @@ export class BrokerCore {
     if (!this.limiter.tryAcquire(`${rec.node.id}\u0000${threadId}`, now)) {
       throw new Rejection('rate_limited', `over ${this.limits.sendRatePerMinute} messages per minute on this thread`);
     }
-    const message = this.buildMessage(from, rec.node.name, to, 'peer', p.kind, p.body, p.replyTo, threadId, now);
+    const message = this.buildMessage(from, rec.node.name, to, 'peer', p.kind, p.body, p.replyTo, threadId, now, media);
     this.route(message);
+    this.commitAttachments(message, media);
     this.sendShim(link, 'sent', { re: frame.id, messageId: message.id, threadId, ts: message.ts });
   }
 
@@ -495,6 +640,7 @@ export class BrokerCore {
     if (link.closed) return;
     link.closed = true;
     this.shimLinks.delete(link);
+    if (link.uploadKey) this.uploadKeys.delete(link.uploadKey);
     if (link.helloTimer) this.clock.clearTimeout(link.helloTimer);
     if (!link.sessionId) return;
     const rec = this.nodes.get(link.sessionId);
@@ -532,7 +678,8 @@ export class BrokerCore {
 
   private onOwnerSend(link: UiLink, frame: FrameOf<UiToBrokerFrame, 'owner_send'>): void {
     const p = frame.payload;
-    this.checkDraft(p.body, p.attachments);
+    this.checkBody(p.body);
+    const media = this.checkAttachments({ kind: 'owner' }, p.attachments);
     const id = this.resolveId(p.to);
     const rec = this.nodes.get(id);
     if (!rec) {
@@ -542,8 +689,9 @@ export class BrokerCore {
     const to = sessionAddress(rec.node.id);
     const threadId = threadIdFor(OWNER_ADDRESS, to);
     const now = this.clock.now();
-    const message = this.buildMessage(OWNER_ADDRESS, OWNER_KEY, to, 'owner', p.kind, p.body, p.replyTo, threadId, now);
+    const message = this.buildMessage(OWNER_ADDRESS, OWNER_KEY, to, 'owner', p.kind, p.body, p.replyTo, threadId, now, media);
     this.route(message);
+    this.commitAttachments(message, media);
     this.sendUi(link, 'sent', { re: frame.id, messageId: message.id, threadId, ts: message.ts });
   }
 
@@ -574,12 +722,10 @@ export class BrokerCore {
 
   // -------------------------------------------------------------- routing
 
-  private checkDraft(body: string, attachments: string[]): void {
+  private checkBody(body: string): void {
     if (utf8Bytes(body) > this.limits.maxBodyBytes) {
       throw new Rejection('too_large', `body is over ${this.limits.maxBodyBytes} bytes`);
     }
-    // WP3: media is single use. Only the uploading connection may attach a media ID, and only once.
-    if (attachments.length > 0) throw new Rejection('invalid', 'unknown media id');
   }
 
   private resolveId(id: SessionId): SessionId {
@@ -623,7 +769,9 @@ export class BrokerCore {
     replyTo: string | undefined,
     threadId: string,
     now: number,
+    media: StoredMedia[],
   ): Message {
+    const attachments: MediaRef[] = media.map((e) => ({ ...e.ref }));
     const message: Message = {
       id: this.newId(now),
       threadId,
@@ -633,7 +781,7 @@ export class BrokerCore {
       senderKind,
       kind,
       body: sanitizeText(body),
-      attachments: [],
+      attachments,
       ts: now,
     };
     if (replyTo !== undefined) message.replyTo = replyTo;
@@ -726,6 +874,7 @@ export class BrokerCore {
   private heartbeatTick(): void {
     const now = this.clock.now();
     this.limiter.sweep(now);
+    this.uploadLimiter.sweep(now);
     for (const rec of [...this.nodes.values()]) {
       const link = rec.link;
       if (!link) continue;
@@ -745,6 +894,7 @@ export class BrokerCore {
     if (link.closed) return;
     link.closed = true;
     this.shimLinks.delete(link);
+    if (link.uploadKey) this.uploadKeys.delete(link.uploadKey);
     if (link.helloTimer) this.clock.clearTimeout(link.helloTimer);
     link.conn.close(code, reason);
   }

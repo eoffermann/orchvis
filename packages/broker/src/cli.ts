@@ -4,7 +4,9 @@
  * Loads `orchvis.config.json` (from `--config <path>`, `ORCHVIS_CONFIG`, or
  * `~/.orchvis/orchvis.config.json`), creating it with fresh tokens on first
  * run, checks that the port is free, and starts the broker. Human-readable
- * progress goes to stderr; structured logs go to stdout.
+ * progress goes to stderr; structured logs go to stdout. No token is ever
+ * printed. `--init` only creates the config file (if missing), prints its
+ * path and `created` or `exists` on stdout, and exits 0 without binding.
  *
  * @packageDocumentation
  */
@@ -31,9 +33,15 @@ async function main(): Promise<void> {
   if (process.argv.includes('--help')) {
     process.stderr.write(
       [
-        'Usage: orchvis-broker [--config <path>]',
+        'Usage: orchvis-broker [--config <path>] [--init]',
         '',
         'Config file: --config, else ORCHVIS_CONFIG, else ~/.orchvis/orchvis.config.json.',
+        'On first run the broker creates it with a fresh shim token and owner token. Tokens are',
+        'never printed; read them from the config file.',
+        '',
+        '  --init   Create the config file with fresh tokens if it is missing, print its path and',
+        '           whether it was created or already existed, then exit without starting.',
+        '',
         'Environment overrides:',
         ...Object.values(CONFIG_ENV_VARS).map((v) => `  ${v}`),
         ...Object.values(LIMIT_ENV_VARS).map((v) => `  ${v}`),
@@ -44,22 +52,21 @@ async function main(): Promise<void> {
   }
 
   const configPath = argValue('--config');
+  const init = process.argv.includes('--init');
   progress(`reading config${configPath ? ` from ${configPath}` : ''}...`);
+  // Tokens are never printed: launchers redirect this output to log files.
   const loaded = loadConfig(configPath ? { path: configPath } : {});
   const { config } = loaded;
-  progress(`config: ${loaded.path} (port ${config.port}, bind ${config.bind})`);
   if (loaded.generatedTokens) {
-    process.stderr.write(
-      [
-        '',
-        'First run: generated tokens and wrote them to the config file. They are shown once:',
-        `  shim token:  ${config.shimToken}`,
-        `  owner token: ${config.ownerToken}`,
-        'The shim token goes in each machine\'s ~/.orchvis/config.json. The owner token is for the web app login only.',
-        '',
-      ].join('\n'),
-    );
+    progress(`created config file ${loaded.path}`);
+    progress('it holds the shim token (for each machine running sessions) and the owner token (for the web app login)');
   }
+  if (init) {
+    if (!loaded.generatedTokens) progress(`config file already exists: ${loaded.path}`);
+    process.stdout.write(`${loaded.path}\n${loaded.generatedTokens ? 'created' : 'exists'}\n`);
+    return;
+  }
+  progress(`config: ${loaded.path} (port ${config.port}, bind ${config.bind})`);
 
   progress(`checking that port ${config.port} is free on ${config.bind}...`);
   try {

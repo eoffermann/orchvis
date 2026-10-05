@@ -222,12 +222,14 @@ describe('rejection codes', () => {
 });
 
 describe('/ws/ui auth', () => {
-  it('refuses an upgrade without the owner cookie, or with the shim token', async () => {
+  it('closes with 4401 for the raw owner or shim token in the cookie, and admits a login session', async () => {
     const h = await harness();
-    const { FakeUi } = await import('./helpers/fake.js');
-    expect(await FakeUi.tryConnect(h.broker, {})).toBe(401);
-    expect(await FakeUi.tryConnect(h.broker, { cookie: `orchvis_owner=${h.broker.shimToken}` })).toBe(401);
-    expect(await FakeUi.tryConnect(h.broker, { cookie: `other=1; orchvis_owner=${h.broker.ownerToken}` })).toBe(101);
+    const { FakeUi, login } = await import('./helpers/fake.js');
+    const origin = h.broker.url;
+    expect(await FakeUi.tryConnect(h.broker, { origin, cookie: `orchvis_owner=${h.broker.shimToken}` })).toBe(4401);
+    expect(await FakeUi.tryConnect(h.broker, { origin, cookie: `orchvis_owner=${h.broker.ownerToken}` })).toBe(4401);
+    const cookie = await login(h.broker);
+    expect(await FakeUi.tryConnect(h.broker, { origin, cookie: `other=1; ${cookie}` })).toBe(101);
   });
 });
 

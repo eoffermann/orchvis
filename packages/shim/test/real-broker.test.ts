@@ -4,7 +4,8 @@
  * driven over stdio by an MCP SDK client with its own session ID, ORCHVIS_HOME
  * and cwd, talk to each other end to end.
  */
-import { writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -12,6 +13,10 @@ import { startBroker, type RunningBroker } from '@orchvis/broker';
 import { spawnShim, type ShimProcess } from './support/shim-process.js';
 
 const HOST = hostname().trim().toLowerCase();
+
+/** A valid 1x1 PNG, so the broker's content sniffing accepts it as image/png. */
+const PNG_1X1_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==';
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Strips the `Unread: N` suffix tools append. */
@@ -148,16 +153,34 @@ describe('two shims against the real broker', () => {
     expect(r.text).toMatch(/^rejected: unknown_recipient: No session with that name or ID is known to the broker\./);
   });
 
-  it('attachments: with WP3 not built, the upload fails with a clear tool result and nothing is sent', async () => {
-    const file = join(a.tmp, 'notes.txt');
-    writeFileSync(file, 'notes');
-    const before = b.channel().length;
-    const r = await a.call('send_message', { to: 'BETA', body: 'see attached', attachments: [{ path: file, caption: 'Notes' }] });
-    expect(r.isError).toBe(true);
-    // The broker has no /api/media route yet, so the upload is answered 404 before any `send`.
-    expect(r.text).toMatch(/^upload_failed: the broker has no media upload endpoint, HTTP 404/);
-    await sleep(300);
-    expect(b.channel().length).toBe(before);
+  it('media round trip: A uploads and attaches a PNG, B is notified and fetches identical bytes', async () => {
+    const png = Buffer.from(PNG_1X1_BASE64, 'base64');
+    const file = join(a.tmp, 'pixel.png');
+    writeFileSync(file, png);
+    const caption = 'A single red pixel, the media round-trip fixture';
+
+    const sent = await a.call('send_message', {
+      to: 'BETA',
+      body: 'see attached',
+      attachments: [{ path: file, caption }],
+    });
+    expect(sent.isError, sent.text).toBe(false);
+    const msgId = /message_id=([0-9A-Z]{26})/.exec(sent.text)![1]!;
+
+    const note = await b.waitForChannel((n) => n.meta['msg_id'] === msgId);
+    const mediaId = note.meta['attachments'];
+    expect(mediaId).toBeTruthy();
+    expect(mediaId).not.toContain(',');
+    expect(note.content).toBe(`see attached\n[image] ${caption} (media_id=${mediaId})`);
+
+    const fetched = await b.call('fetch_media', { media_id: mediaId! });
+    expect(fetched.isError, fetched.text).toBe(false);
+    const info = JSON.parse(bodyOf(fetched.text)) as { path: string; mime: string; caption: string; bytes: number };
+    expect(info).toMatchObject({ mime: 'image/png', caption, bytes: png.length });
+    expect(info.path).not.toContain('\\');
+    const got = readFileSync(info.path);
+    expect(got.equals(png)).toBe(true);
+    expect(createHash('sha256').update(got).digest('hex')).toBe(createHash('sha256').update(png).digest('hex'));
   });
 
   it('never logs message bodies or the shim token', () => {

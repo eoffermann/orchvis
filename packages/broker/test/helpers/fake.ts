@@ -2,6 +2,7 @@ import WebSocket from 'ws';
 import {
   BrokerToShimFrameSchema,
   BrokerToUiFrameSchema,
+  LOGIN_PATH,
   PROTOCOL_VERSION,
   createFrameFactory,
   decodeFrame,
@@ -210,25 +211,55 @@ export function helloPayload(broker: RunningBroker, id: FakeIdentity): PayloadOf
   };
 }
 
-/** A fake web app on `/ws/ui`, authenticated with the Owner cookie. */
+/**
+ * Logs in at `POST /api/login` and returns the `Cookie` header value for the
+ * new Owner session.
+ */
+export async function login(broker: RunningBroker, token = broker.ownerToken): Promise<string> {
+  const res = await fetch(`${broker.url}${LOGIN_PATH}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ token }),
+  });
+  if (res.status !== 204) throw new Error(`login failed: HTTP ${res.status}`);
+  const setCookie = res.headers.get('set-cookie') ?? '';
+  return setCookie.split(';')[0] ?? '';
+}
+
+/** Headers a browser on the broker's own page sends on the `/ws/ui` upgrade. */
+export function uiHeaders(broker: RunningBroker, cookie: string): Record<string, string> {
+  return { cookie, origin: broker.url };
+}
+
+/** A fake web app on `/ws/ui`, logged in as the Owner. */
 export class FakeUi extends FrameClient<BrokerToUiFrame, UiToBrokerFrame> {
-  /** Connects with the Owner cookie and waits for the snapshot. */
-  static async connect(broker: RunningBroker): Promise<{ ui: FakeUi; snapshot: FrameOf<BrokerToUiFrame, 'snapshot'> }> {
-    const ui = new FakeUi(connecting(wsUrl(broker, '/ws/ui'), { cookie: `orchvis_owner=${broker.ownerToken}` }), BrokerToUiFrameSchema);
+  /** The Owner cookie this client connected with. */
+  cookie = '';
+
+  /** Logs in (or reuses `cookie`), connects from the broker's own origin, and waits for the snapshot. */
+  static async connect(broker: RunningBroker, cookie?: string): Promise<{ ui: FakeUi; snapshot: FrameOf<BrokerToUiFrame, 'snapshot'> }> {
+    const c = cookie ?? (await login(broker));
+    const ui = new FakeUi(connecting(wsUrl(broker, '/ws/ui'), uiHeaders(broker, c)), BrokerToUiFrameSchema);
+    ui.cookie = c;
     await opened(ui.ws);
     const snapshot = await ui.next('snapshot');
     return { ui, snapshot };
   }
 
-  /** Tries to connect with arbitrary headers; resolves to the HTTP status on failure, or 101. */
+  /**
+   * Tries to connect with arbitrary headers. Resolves to the close code the
+   * broker sent, or 101 when a snapshot arrived (the socket is then closed).
+   */
   static async tryConnect(broker: RunningBroker, headers: Record<string, string>): Promise<number> {
-    try {
-      const ws = await opened(connecting(wsUrl(broker, '/ws/ui'), headers));
-      ws.close();
-      return 101;
-    } catch (err) {
-      const m = /HTTP (\d+)/.exec((err as Error).message);
-      return m ? Number(m[1]) : -1;
-    }
+    const ws = connecting(wsUrl(broker, '/ws/ui'), headers);
+    return new Promise<number>((resolve) => {
+      ws.once('message', () => {
+        resolve(101);
+        ws.close();
+      });
+      ws.once('close', (code) => resolve(code));
+      ws.once('error', () => resolve(-1));
+      ws.once('unexpected-response', (_req, res) => resolve(res.statusCode ?? -1));
+    });
   }
 }

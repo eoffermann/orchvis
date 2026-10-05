@@ -43,4 +43,47 @@ describe('broker driven by the WP1 simulator fleet', () => {
       await broker.close();
     }
   }, 20_000);
+
+  it('accepts fleet media uploads and attachments, and the feed still matches a fresh snapshot', async () => {
+    const logs: string[] = [];
+    const broker = await startBroker({ port: 0, logSink: (l) => logs.push(l) });
+    const { ui } = await FakeUi.connect(broker);
+    const fleet = await startShimFleet({
+      url: `${broker.url.replace(/^http/, 'ws')}/ws/shim`,
+      token: broker.shimToken,
+      sessions: 6,
+      hosts: 2,
+      repos: 2,
+      seed: 11,
+      traffic: { rate: 300, ownerRatePerHour: 1800, statusMeanMs: 1000, disconnectMeanMs: 0, hostileRate: 0.2, mediaRate: 0.5 },
+    });
+    try {
+      await new Promise((r) => setTimeout(r, 2_500));
+      fleet.engine?.stop();
+      await new Promise((r) => setTimeout(r, 500));
+      const stats = fleet.stats();
+      expect(stats.invalidInbound).toBe(0);
+      expect(stats.uploads).toBeGreaterThan(3);
+      // The fleet bursts well above a real session's pace, so some uploads may meet the per-session
+      // upload limit; any other upload rejection is a bug.
+      const rejected = logs.filter((l) => l.includes('"endpoint":"media"')).map((l) => (JSON.parse(l) as { code: string }).code);
+      expect(rejected.filter((c) => c !== 'rate_limited')).toEqual([]);
+      expect(stats.uploadFailures).toBe(rejected.length);
+
+      const { ui: ui2, snapshot } = await FakeUi.connect(broker);
+      await ui.sync();
+      const live = new UiStateMirror();
+      for (const f of ui.frames) live.apply(f);
+      const fresh = new UiStateMirror();
+      fresh.apply(snapshot);
+      expect(diffUiStates(live.state(), fresh.state(), snapshot.payload.now)).toEqual([]);
+      expect(snapshot.payload.media.length).toBeGreaterThan(0);
+      expect(snapshot.payload.messages.some((m) => m.attachments.length > 0)).toBe(true);
+      await ui2.close();
+    } finally {
+      fleet.close();
+      await ui.close();
+      await broker.close();
+    }
+  }, 20_000);
 });

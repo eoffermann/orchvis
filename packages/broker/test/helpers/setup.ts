@@ -1,5 +1,5 @@
 import { afterEach } from 'vitest';
-import { ManualClock, startBroker, type BrokerConfigInput, type RunningBroker } from '../../src/index.js';
+import { ManualClock, startBroker, type BrokerConfigInput, type RunningBroker, type StartBrokerOptions } from '../../src/index.js';
 import { FakeShim, FakeUi } from './fake.js';
 
 /** A broker under test, with its manual clock, captured log lines and every client opened through it. */
@@ -18,10 +18,10 @@ afterEach(async () => {
 });
 
 /** Starts a broker on port 0 with a manual clock. Everything is closed after each test. */
-export async function harness(config: BrokerConfigInput = {}): Promise<Harness> {
+export async function harness(config: BrokerConfigInput = {}, extra: Pick<StartBrokerOptions, 'mediaDir' | 'publicDir'> = {}): Promise<Harness> {
   const clock = new ManualClock();
   const logs: string[] = [];
-  const broker = await startBroker({ port: 0, config, clock, logSink: (l) => logs.push(l) });
+  const broker = await startBroker({ ...extra, port: 0, config, clock, logSink: (l) => logs.push(l) });
   open.push(broker);
   return {
     broker,
