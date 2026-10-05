@@ -3,12 +3,13 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { DEFAULT_LIMITS } from '@orchvis/protocol';
+import { DEFAULT_LIMITS, MEDIA_PATH } from '@orchvis/protocol';
 import { silentLogger } from '../src/log.js';
 import {
   MediaError,
   MediaStore,
   guessMime,
+  mediaHttpError,
   safeFilename,
   toForwardSlashes,
   uploadMedia,
@@ -90,7 +91,7 @@ describe('upload and fetch against the fake broker', () => {
     const data = Buffer.from('fake png bytes');
     const src = join(dir, 'diagram.png');
     writeFileSync(src, data);
-    const endpoint = { httpBase: broker.url, token: broker.shimToken };
+    const endpoint = { httpBase: broker.url, token: broker.shimToken, uploadKey: broker.issueUploadKey() };
     const ref = await uploadMedia(endpoint, { absPath: src, caption: 'Architecture diagram' });
     expect(ref.caption).toBe('Architecture diagram');
     expect(ref.mime).toBe('image/png');
@@ -111,7 +112,7 @@ describe('upload and fetch against the fake broker', () => {
   it('discards a download whose checksum does not match', async () => {
     const src = join(dir, 'x.txt');
     writeFileSync(src, 'abc');
-    const endpoint = { httpBase: broker.url, token: broker.shimToken };
+    const endpoint = { httpBase: broker.url, token: broker.shimToken, uploadKey: broker.issueUploadKey() };
     const ref = await uploadMedia(endpoint, { absPath: src, caption: 'text' });
     const store = new MediaStore('raw-2', silentLogger, dir);
     await expect(store.fetch(endpoint, { ...ref, sha256: 'f'.repeat(64) }, 60_000)).rejects.toMatchObject({
@@ -121,17 +122,61 @@ describe('upload and fetch against the fake broker', () => {
     store.disposeSync();
   });
 
-  it('maps a bad token to unauthorized and a missing id to not_found', async () => {
+  it('maps a bad token or upload key to unauthorized and a missing id to not_found', async () => {
     const src = join(dir, 'y.txt');
     writeFileSync(src, 'abc');
-    await expect(uploadMedia({ httpBase: broker.url, token: 'wrong' }, { absPath: src, caption: 'c' })).rejects.toMatchObject({
-      code: 'unauthorized',
-    });
-    const store = new MediaStore('raw-3', silentLogger, dir);
-    const ref = await uploadMedia({ httpBase: broker.url, token: broker.shimToken }, { absPath: src, caption: 'c' });
+    const key = broker.issueUploadKey();
     await expect(
-      store.fetch({ httpBase: broker.url, token: broker.shimToken }, { ...ref, mediaId: 'gone' }, 60_000),
-    ).rejects.toMatchObject({ code: 'not_found' });
+      uploadMedia({ httpBase: broker.url, token: 'wrong', uploadKey: key }, { absPath: src, caption: 'c' }),
+    ).rejects.toMatchObject({ code: 'unauthorized' });
+    await expect(
+      uploadMedia({ httpBase: broker.url, token: broker.shimToken, uploadKey: 'not-a-live-key' }, { absPath: src, caption: 'c' }),
+    ).rejects.toMatchObject({ code: 'unauthorized', message: expect.stringMatching(/upload key/) });
+    const endpoint = { httpBase: broker.url, token: broker.shimToken, uploadKey: key };
+    const store = new MediaStore('raw-3', silentLogger, dir);
+    const ref = await uploadMedia(endpoint, { absPath: src, caption: 'c' });
+    await expect(store.fetch(endpoint, { ...ref, mediaId: 'gone' }, 60_000)).rejects.toMatchObject({ code: 'not_found' });
     store.disposeSync();
+  });
+
+  it('sends the shim token and the upload key on upload and download, using the protocol field names', async () => {
+    const src = join(dir, 'z.txt');
+    writeFileSync(src, 'hello');
+    const key = broker.issueUploadKey();
+    const endpoint = { httpBase: broker.url, token: broker.shimToken, uploadKey: key };
+    const from = broker.mediaRequests.length;
+    const ref = await uploadMedia(endpoint, { absPath: src, caption: 'greeting' });
+    const store = new MediaStore('raw-4', silentLogger, dir);
+    await store.fetch(endpoint, ref, 60_000);
+    store.disposeSync();
+    expect(broker.mediaRequests.slice(from)).toEqual([
+      { method: 'POST', path: MEDIA_PATH, token: broker.shimToken, uploadKey: key },
+      { method: 'GET', path: `${MEDIA_PATH}/${ref.mediaId}`, token: broker.shimToken, uploadKey: key },
+    ]);
+  });
+
+  it.each([
+    [400, { error: 'invalid', detail: 'empty caption' }, 'invalid', /malformed.*empty caption/],
+    [413, { error: 'too_large', detail: 'over maxMediaBytes' }, 'too_large', /size limit/],
+    [415, { error: 'invalid', detail: 'sniffed image/png' }, 'invalid', /does not match its file type/],
+    [429, { error: 'rate_limited' }, 'rate_limited', /wait a minute/],
+    [500, { error: 'invalid' }, 'upload_failed', /HTTP 500/],
+  ] as const)('maps an upload answered %i to %s', async (status, body, code, message) => {
+    const src = join(dir, 'e.txt');
+    writeFileSync(src, 'e');
+    broker.failNextMedia(status, body);
+    await expect(
+      uploadMedia({ httpBase: broker.url, token: broker.shimToken, uploadKey: broker.issueUploadKey() }, { absPath: src, caption: 'c' }),
+    ).rejects.toMatchObject({ code, message: expect.stringMatching(message) });
+  });
+});
+
+describe('mediaHttpError', () => {
+  it('maps an expired download to not_found and survives a non-JSON body', () => {
+    expect(mediaHttpError('download', 'm1', 404, '{"error":"not_found"}')).toMatchObject({ code: 'not_found' });
+    expect(mediaHttpError('upload', 'a.png', 502, '<html>bad gateway</html>')).toMatchObject({
+      code: 'upload_failed',
+      message: expect.stringMatching(/HTTP 502: <html>/),
+    });
   });
 });

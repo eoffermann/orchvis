@@ -47,18 +47,57 @@ export type RejectedPayload = PayloadOf<BrokerToShimFrame, 'rejected'>;
  */
 export const TOKEN_REJECTED = 'token rejected by broker; fix ~/.orchvis/config.json';
 
+/**
+ * Reason reported once the broker closed the connection with
+ * `WS_CLOSE.replaced`: a newer shim with the same session ID took over. The
+ * client stops reconnecting after that, or the two shims would evict each
+ * other in turn.
+ */
+export const REPLACED =
+  'another shim for this session took over the broker connection (close 4409); this shim will not reconnect';
+
+/** What the client does after the broker closes the socket with a given code. */
+export interface ClosePolicy {
+  /** Reason to report, or undefined to keep the last known reason. */
+  reason: string | undefined;
+  /** Whether to reconnect with backoff. */
+  reconnect: boolean;
+}
+
+/**
+ * The one place that maps a WebSocket close code (see `WS_CLOSE`) to the
+ * client's reaction:
+ * - `helloRejected` after an `unauthorized` rejection: stop, only a config fix helps.
+ * - `replaced`: stop, another shim for this session holds the connection.
+ * - `heartbeatTimeout`, `shuttingDown`, any other code: reconnect with backoff.
+ */
+export function closePolicy(code: number, helloRejectCode: RejectCode | undefined, wasReady: boolean): ClosePolicy {
+  if (code === WS_CLOSE.helloRejected && helloRejectCode === 'unauthorized') {
+    return { reason: TOKEN_REJECTED, reconnect: false };
+  }
+  if (code === WS_CLOSE.replaced) return { reason: REPLACED, reconnect: false };
+  if (code === WS_CLOSE.heartbeatTimeout) {
+    return { reason: 'the broker heard no heartbeat in time and closed the connection (close 4408)', reconnect: true };
+  }
+  if (code === WS_CLOSE.shuttingDown) return { reason: 'broker is shutting down', reconnect: true };
+  return { reason: wasReady ? `connection closed (${code})` : undefined, reconnect: true };
+}
+
 /** Thrown when a request needs the broker and there is no live session with it. */
 export class BrokerUnreachableError extends Error {
   /** The URL the client tried. */
   readonly url: string;
   /** Why, in a few words. */
   readonly reason: string;
+  /** True when the client has stopped reconnecting, so retrying later will not help. */
+  readonly permanent: boolean;
 
-  constructor(url: string, reason: string) {
+  constructor(url: string, reason: string, permanent = false) {
     super(`broker_unreachable: ${url} (${reason})`);
     this.name = 'BrokerUnreachableError';
     this.url = url;
     this.reason = reason;
+    this.permanent = permanent;
   }
 }
 
@@ -138,6 +177,8 @@ export class BrokerClient {
   private heartbeatTimer: NodeJS.Timeout | undefined;
   private lastInbound = 0;
   private stopped = true;
+  /** Set when a close code told the client to stop reconnecting for good. */
+  private givenUp = false;
   private lastError = 'connecting';
   private helloRejectCode: RejectCode | undefined;
   private lastRegister: RegisterPayload | undefined;
@@ -164,6 +205,14 @@ export class BrokerClient {
   /** Limits from the latest `welcome`, or the defaults before one arrives. */
   get limits(): Limits {
     return this.welcome?.limits ?? DEFAULT_LIMITS;
+  }
+
+  /**
+   * This connection's `welcome.uploadKey`, sent on every HTTP media request.
+   * Undefined while not connected; each new `welcome` replaces it.
+   */
+  get uploadKey(): string | undefined {
+    return this.ready ? this.welcome?.uploadKey : undefined;
   }
 
   /** Canonical session ID: the latest one the broker assigned, else the original. */
@@ -198,7 +247,7 @@ export class BrokerClient {
 
   /** Throws {@link BrokerUnreachableError} unless the session is live. */
   assertReady(): void {
-    if (!this.ready) throw new BrokerUnreachableError(this.opts.url, this.lastError);
+    if (!this.ready) throw new BrokerUnreachableError(this.opts.url, this.lastError, this.givenUp);
   }
 
   /**
@@ -309,20 +358,23 @@ export class BrokerClient {
     ws.on('close', (code) => {
       if (ws !== this.ws) return;
       const wasReady = this.welcome !== undefined;
-      const tokenRejected = code === WS_CLOSE.helloRejected && this.helloRejectCode === 'unauthorized';
-      if (tokenRejected) {
-        this.lastError = TOKEN_REJECTED;
-      } else if (wasReady) {
-        this.lastError = code === WS_CLOSE.shuttingDown ? 'broker is shutting down' : `connection closed (${code})`;
-      }
+      const policy = closePolicy(code, this.helloRejectCode, wasReady);
+      if (policy.reason !== undefined) this.lastError = policy.reason;
       this.helloRejectCode = undefined;
+      if (!policy.reconnect) {
+        // Neither a wrong token nor a takeover fixes itself; stay down until the shim restarts.
+        this.stopped = true;
+        this.givenUp = true;
+      }
       this.teardown(this.lastError);
       log.info(`broker connection closed (${code}); ${this.lastError}`);
       if (wasReady) this.opts.onDisconnect?.(this.lastError);
-      if (tokenRejected) {
-        // A wrong token will not fix itself; stay down until the shim restarts with a new config.
-        this.stopped = true;
-        log.warn('not reconnecting: the broker rejected the shim token');
+      if (!policy.reconnect) {
+        log.warn(
+          this.lastError === TOKEN_REJECTED
+            ? 'not reconnecting: the broker rejected the shim token'
+            : `not reconnecting: ${this.lastError}`,
+        );
         return;
       }
       this.scheduleReconnect();

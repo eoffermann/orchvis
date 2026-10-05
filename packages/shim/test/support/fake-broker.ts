@@ -2,7 +2,9 @@
  * A fake orchvis broker for shim integration tests: a `ws` server on an
  * ephemeral port that speaks the protocol frames (validated with the protocol
  * schemas), plus `POST MEDIA_PATH` and `GET MEDIA_PATH/:id`, authenticated by
- * the protocol's `SHIM_TOKEN_HEADER`. A rejected `hello` is followed by a close
+ * the protocol's `SHIM_TOKEN_HEADER` and `UPLOAD_KEY_HEADER` (a key from a
+ * live connection's `welcome`), answering `201` with a `MediaRef` and errors
+ * with an `HttpErrorSchema` body. A rejected `hello` is followed by a close
  * with `WS_CLOSE.helloRejected`, as the real broker does.
  *
  * Tests that only need a broker to talk to should depend on {@link TestBroker},
@@ -16,9 +18,13 @@ import type { AddressInfo } from 'node:net';
 import { WebSocketServer, type WebSocket } from 'ws';
 import {
   DEFAULT_LIMITS,
+  MEDIA_CAPTION_FIELD,
+  MEDIA_FILE_FIELD,
   MEDIA_PATH,
   PROTOCOL_VERSION,
   SHIM_TOKEN_HEADER,
+  UPLOAD_KEY_HEADER,
+  type HttpError,
   SHIM_WS_PATH,
   WS_CLOSE,
   ShimToBrokerFrameSchema,
@@ -86,6 +92,14 @@ export interface FakeBroker extends TestBroker {
   readonly connectionCount: number;
   /** Closes every shim connection with a close code, e.g. `WS_CLOSE.shuttingDown`. */
   closeConnections(code: number): void;
+  /** Upload keys sent in `welcome`, in order. */
+  readonly uploadKeys: string[];
+  /** Issues an upload key that is valid without a WebSocket connection, for HTTP-only tests. */
+  issueUploadKey(): string;
+  /** Every media HTTP request, with the auth headers it carried. */
+  readonly mediaRequests: Array<{ method: string; path: string; token: string | undefined; uploadKey: string | undefined }>;
+  /** Answers the next media request with this status and `HttpErrorSchema` body instead of handling it. */
+  failNextMedia(status: number, body: HttpError): void;
 }
 
 /** Options for {@link startFakeBroker}. */
@@ -109,6 +123,11 @@ export async function startFakeBroker(options: FakeBrokerOptions = {}): Promise<
   const sockets = new Map<WebSocket, { sessionId: string; mk: ReturnType<typeof createFrameFactory<BrokerToShimFrame>> }>();
   let helloCount = 0;
   let nextReject: { code: RejectCode; detail: string } | undefined;
+  const uploadKeys: string[] = [];
+  /** Keys that currently authenticate: those of open connections plus any issued directly. */
+  const liveKeys = new Set<string>();
+  const mediaRequests: FakeBroker['mediaRequests'] = [];
+  let nextMediaFailure: { status: number; body: HttpError } | undefined;
 
   const state: Pick<FakeBroker, 'aliasOnRegister' | 'peers' | 'limits' | 'rejectHellosWith'> = {
     aliasOnRegister: undefined,
@@ -120,15 +139,41 @@ export async function startFakeBroker(options: FakeBrokerOptions = {}): Promise<
   const http = createServer((req, res) => void handleHttp(req, res));
   const wss = new WebSocketServer({ server: http, path: SHIM_WS_PATH });
 
+  function header(req: IncomingMessage, name: string): string | undefined {
+    const v = req.headers[name];
+    return Array.isArray(v) ? v[0] : v;
+  }
+
   // Checked against the protocol constants, not the shim's helper, so the two cannot drift together.
   function authorized(req: IncomingMessage): boolean {
-    return req.headers[SHIM_TOKEN_HEADER] === shimToken;
+    const key = header(req, UPLOAD_KEY_HEADER);
+    return header(req, SHIM_TOKEN_HEADER) === shimToken && key !== undefined && liveKeys.has(key);
+  }
+
+  function fail(res: ServerResponse, status: number, body: HttpError): void {
+    res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body));
   }
 
   async function handleHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://x');
+    if (url.pathname === MEDIA_PATH || url.pathname.startsWith(`${MEDIA_PATH}/`)) {
+      mediaRequests.push({
+        method: req.method ?? '',
+        path: url.pathname,
+        token: header(req, SHIM_TOKEN_HEADER),
+        uploadKey: header(req, UPLOAD_KEY_HEADER),
+      });
+      if (nextMediaFailure) {
+        const f = nextMediaFailure;
+        nextMediaFailure = undefined;
+        req.resume();
+        fail(res, f.status, f.body);
+        return;
+      }
+    }
     if (!authorized(req)) {
-      res.writeHead(401).end('unauthorized');
+      req.resume();
+      fail(res, 401, { error: 'unauthorized', detail: 'shim token or upload key not accepted' });
       return;
     }
     if (req.method === 'POST' && url.pathname === MEDIA_PATH) {
@@ -139,10 +184,10 @@ export async function startFakeBroker(options: FakeBrokerOptions = {}): Promise<
         duplex: 'half',
       } as RequestInit);
       const form = await request.formData();
-      const caption = form.get('caption');
-      const file = form.get('file');
+      const caption = form.get(MEDIA_CAPTION_FIELD);
+      const file = form.get(MEDIA_FILE_FIELD);
       if (typeof caption !== 'string' || !caption || !(file instanceof Blob)) {
-        res.writeHead(400).end('caption and file required');
+        fail(res, 400, { error: 'invalid', detail: 'caption and file required' });
         return;
       }
       const data = Buffer.from(await file.arrayBuffer());
@@ -156,14 +201,14 @@ export async function startFakeBroker(options: FakeBrokerOptions = {}): Promise<
         expiresAt: Date.now() + state.limits.mediaTtlMs,
       };
       uploads.set(ref.mediaId, { ref, data });
-      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(ref));
+      res.writeHead(201, { 'content-type': 'application/json' }).end(JSON.stringify(ref));
       return;
     }
     const prefix = `${MEDIA_PATH}/`;
     if (req.method === 'GET' && url.pathname.startsWith(prefix) && !url.pathname.slice(prefix.length).includes('/')) {
       const item = uploads.get(decodeURIComponent(url.pathname.slice(prefix.length)));
       if (!item) {
-        res.writeHead(404).end('not found');
+        fail(res, 404, { error: 'not_found' });
         return;
       }
       res.writeHead(200, { 'content-type': item.ref.mime, 'content-length': item.data.length }).end(item.data);
@@ -185,7 +230,10 @@ export async function startFakeBroker(options: FakeBrokerOptions = {}): Promise<
   let connectionCount = 0;
   wss.on('connection', (ws) => {
     connectionCount++;
-    const conn = { sessionId: '', mk: createFrameFactory<BrokerToShimFrame>('b') };
+    const conn: { sessionId: string; uploadKey?: string; mk: ReturnType<typeof createFrameFactory<BrokerToShimFrame>> } = {
+      sessionId: '',
+      mk: createFrameFactory<BrokerToShimFrame>('b'),
+    };
     ws.on('message', (data) => {
       const raw = data.toString();
       const decoded = decodeFrame(ShimToBrokerFrameSchema, raw);
@@ -213,6 +261,9 @@ export async function startFakeBroker(options: FakeBrokerOptions = {}): Promise<
           }
           helloCount++;
           conn.sessionId = state.aliasOnRegister ?? frame.payload.sessionId;
+          conn.uploadKey = randomBytes(24).toString('base64url');
+          uploadKeys.push(conn.uploadKey);
+          liveKeys.add(conn.uploadKey);
           sockets.set(ws, conn);
           send(
             ws,
@@ -220,6 +271,7 @@ export async function startFakeBroker(options: FakeBrokerOptions = {}): Promise<
               re: frame.id,
               sessionId: conn.sessionId,
               name: frame.payload.defaultName,
+              uploadKey: conn.uploadKey,
               limits: state.limits,
               peers: state.peers,
               brokerVersion: 'fake-0',
@@ -289,7 +341,11 @@ export async function startFakeBroker(options: FakeBrokerOptions = {}): Promise<
           return;
       }
     });
-    ws.on('close', () => sockets.delete(ws));
+    ws.on('close', () => {
+      sockets.delete(ws);
+      // As in the protocol: a connection's upload key stops working when it closes.
+      if (conn.uploadKey) liveKeys.delete(conn.uploadKey);
+    });
   });
 
   await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve));
@@ -331,6 +387,16 @@ export async function startFakeBroker(options: FakeBrokerOptions = {}): Promise<
     },
     closeConnections(code) {
       for (const ws of wss.clients) ws.close(code);
+    },
+    uploadKeys,
+    mediaRequests,
+    issueUploadKey() {
+      const key = randomBytes(24).toString('base64url');
+      liveKeys.add(key);
+      return key;
+    },
+    failNextMedia(status, body) {
+      nextMediaFailure = { status, body };
     },
     set aliasOnRegister(value) {
       state.aliasOnRegister = value;

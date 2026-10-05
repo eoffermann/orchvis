@@ -374,4 +374,69 @@ describe('with a broker', () => {
     expect(down.text).toMatch(/^broker_unreachable: .*shutting down/);
     await b.waitFor('hello', undefined, { from: mark, timeoutMs: 5000 });
   });
+
+  it('a heartbeatTimeout close (4408) reconnects with backoff', async () => {
+    const b = await broker();
+    const s = await shim({ brokerUrl: b.url, token: b.shimToken });
+    await b.waitFor('hello');
+    for (let i = 0; i < 100 && (await s.call('list_peers')).isError; i++) await sleep(50);
+    const mark = b.received.length;
+    b.closeConnections(WS_CLOSE.heartbeatTimeout);
+    await sleep(100);
+    const down = await s.call('list_peers');
+    expect(down.text).toMatch(/^broker_unreachable: .*no heartbeat.*retry later/);
+    await b.waitFor('hello', undefined, { from: mark, timeoutMs: 5000 });
+    for (let i = 0; i < 100 && (await s.call('list_peers')).isError; i++) await sleep(50);
+    expect((await s.call('list_peers')).isError).toBe(false);
+  });
+
+  it('a replaced close (4409) stops reconnecting and tools say another shim took over', async () => {
+    const b = await broker();
+    const s = await shim({ brokerUrl: b.url, token: b.shimToken });
+    await b.waitFor('hello');
+    for (let i = 0; i < 100 && (await s.call('list_peers')).isError; i++) await sleep(50);
+    b.closeConnections(WS_CLOSE.replaced);
+    await sleep(100);
+    for (const [name, args] of [
+      ['list_peers', {}],
+      ['send_message', { to: 'PEER', body: 'hi' }],
+    ] as const) {
+      const r = await s.call(name, args);
+      expect(r.isError, name).toBe(true);
+      expect(r.text, name).toMatch(/^broker_unreachable: .*another shim for this session took over.*will not reconnect/);
+      expect(r.text, name).not.toMatch(/retry later/);
+    }
+    // The first backoff is at most 1 s; well past it there must be no second attempt.
+    await sleep(2500);
+    expect(b.connectionCount).toBe(1);
+    expect(s.stderr()).toMatch(/not reconnecting: another shim for this session took over/);
+  });
+
+  it('uploads with the current connection upload key, and a reconnect brings a new one', async () => {
+    const b = await broker();
+    const s = await shim({ brokerUrl: b.url, token: b.shimToken });
+    await b.waitFor('hello');
+    for (let i = 0; i < 100 && (await s.call('list_peers')).isError; i++) await sleep(50);
+    const file = join(s.tmp, 'notes.txt');
+    writeFileSync(file, 'v1');
+    const first = await s.call('send_message', { to: 'PEER', body: 'a', attachments: [{ path: file, caption: 'Notes' }] });
+    expect(first.isError).toBe(false);
+    expect(b.uploadKeys).toHaveLength(1);
+    expect(b.mediaRequests.at(-1)).toMatchObject({ method: 'POST', token: b.shimToken, uploadKey: b.uploadKeys[0] });
+
+    const mark = b.received.length;
+    b.dropConnections();
+    await b.waitFor('hello', undefined, { from: mark, timeoutMs: 15_000 });
+    for (let i = 0; i < 200 && (await s.call('list_peers')).isError; i++) await sleep(50);
+    expect(b.uploadKeys).toHaveLength(2);
+    expect(b.uploadKeys[1]).not.toBe(b.uploadKeys[0]);
+    const second = await s.call('send_message', { to: 'PEER', body: 'b', attachments: [{ path: file, caption: 'Notes again' }] });
+    expect(second.isError).toBe(false);
+    expect(b.mediaRequests.at(-1)).toMatchObject({ method: 'POST', uploadKey: b.uploadKeys[1] });
+
+    b.failNextMedia(429, { error: 'rate_limited', detail: 'slow down' });
+    const limited = await s.call('send_message', { to: 'PEER', body: 'c', attachments: [{ path: file, caption: 'Notes' }] });
+    expect(limited.isError).toBe(true);
+    expect(limited.text).toMatch(/^rate_limited: too many uploads.*slow down/);
+  });
 });

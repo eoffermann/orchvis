@@ -6,9 +6,13 @@ import { basename, extname, isAbsolute, join, resolve } from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import {
+  HttpErrorSchema,
+  MEDIA_CAPTION_FIELD,
+  MEDIA_FILE_FIELD,
   MEDIA_PATH,
-  MediaRefSchema,
+  MediaUploadResponseSchema,
   SHIM_TOKEN_HEADER,
+  UPLOAD_KEY_HEADER,
   sanitizeText,
   utf8Bytes,
   type Limits,
@@ -17,9 +21,59 @@ import {
 import { fileSafe } from './identity.js';
 import type { Logger } from './log.js';
 
-/** Headers that authenticate a shim on the broker's HTTP endpoints. The single place that builds them. */
-export function shimAuthHeaders(token: string): Record<string, string> {
-  return { [SHIM_TOKEN_HEADER]: token };
+/**
+ * Headers that authenticate a shim on the broker's HTTP media endpoints: the
+ * shared shim token plus this connection's `welcome.uploadKey`. The single
+ * place that builds them.
+ */
+export function shimAuthHeaders(endpoint: Pick<MediaEndpoint, 'token' | 'uploadKey'>): Record<string, string> {
+  return { [SHIM_TOKEN_HEADER]: endpoint.token, [UPLOAD_KEY_HEADER]: endpoint.uploadKey };
+}
+
+/**
+ * Maps a failed media HTTP response (status plus its `HttpErrorSchema` body,
+ * when there is one) to a {@link MediaError} with a code and a plain
+ * explanation. The single place that interprets broker HTTP errors.
+ */
+export function mediaHttpError(op: 'upload' | 'download', what: string, status: number, bodyText: string): MediaError {
+  const parsed = (() => {
+    try {
+      const r = HttpErrorSchema.safeParse(JSON.parse(bodyText));
+      return r.success ? r.data : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+  const detail = parsed?.detail ? ` (${sanitizeText(parsed.detail)})` : '';
+  const http = `HTTP ${status}${parsed ? ` ${parsed.error}` : ''}`;
+  switch (status) {
+    case 401:
+    case 403:
+      return new MediaError(
+        'unauthorized',
+        `the broker refused the ${op} of ${what}: shim token or upload key not accepted, ${http}${detail}. The upload key changes on every reconnect; retry once, and if it persists check ~/.orchvis/config.json`,
+      );
+    case 400:
+      return new MediaError('invalid', `the broker refused the ${op} of ${what} as malformed, ${http}${detail}`);
+    case 413:
+      return new MediaError('too_large', `${what} is over the broker's size limit, ${http}${detail}`);
+    case 415:
+      return new MediaError(
+        'invalid',
+        `the content of ${what} does not match its file type, ${http}${detail}; check the file extension`,
+      );
+    case 429:
+      return new MediaError('rate_limited', `too many uploads from this session, ${http}${detail}; wait a minute and retry`);
+    case 404:
+    case 410:
+      if (op === 'download') return new MediaError('not_found', `media ${what} has expired or is unknown to the broker`);
+      return new MediaError('upload_failed', `the broker has no media upload endpoint, ${http}${detail}`);
+    default:
+      return new MediaError(
+        op === 'upload' ? 'upload_failed' : 'download_failed',
+        `${op} of ${what} failed with ${http}${detail || (parsed ? '' : `: ${sanitizeText(bodyText.slice(0, 200))}`)}`,
+      );
+  }
 }
 
 /** Formats a path with forward slashes, the `C:/Users/...` form on Windows. */
@@ -88,7 +142,7 @@ export interface AttachmentInput {
 
 /** A media failure with a code for the tool result. */
 export class MediaError extends Error {
-  /** `too_large`, `invalid`, `not_found`, `unauthorized`, `upload_failed`, `download_failed` or `checksum_mismatch`. */
+  /** `too_large`, `invalid`, `not_found`, `unauthorized`, `rate_limited`, `upload_failed`, `download_failed` or `checksum_mismatch`. */
   readonly code: string;
 
   constructor(code: string, message: string) {
@@ -103,6 +157,8 @@ export interface MediaEndpoint {
   /** HTTP base URL, no trailing slash. */
   httpBase: string;
   token: string;
+  /** The current connection's `welcome.uploadKey`. */
+  uploadKey: string;
 }
 
 /**
@@ -155,30 +211,27 @@ export async function uploadMedia(
   const name = basename(file.absPath);
   const blob = await openAsBlob(file.absPath, { type: guessMime(name) });
   const form = new FormData();
-  form.append('caption', file.caption);
-  form.append('file', blob, name);
+  form.append(MEDIA_CAPTION_FIELD, file.caption);
+  form.append(MEDIA_FILE_FIELD, blob, name);
   let response: Response;
   try {
     response = await fetch(`${endpoint.httpBase}${MEDIA_PATH}`, {
       method: 'POST',
-      headers: shimAuthHeaders(endpoint.token),
+      headers: shimAuthHeaders(endpoint),
       body: form,
     });
   } catch (err) {
     throw new MediaError('upload_failed', `upload to ${endpoint.httpBase}${MEDIA_PATH} failed: ${(err as Error).message}`);
   }
   const text = await response.text();
-  if (!response.ok) {
-    const code = response.status === 401 || response.status === 403 ? 'unauthorized' : response.status === 413 ? 'too_large' : 'upload_failed';
-    throw new MediaError(code, `upload of ${name} failed with HTTP ${response.status}: ${text.slice(0, 300)}`);
-  }
+  if (!response.ok) throw mediaHttpError('upload', name, response.status, text);
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
     throw new MediaError('upload_failed', 'broker answered the upload with something other than JSON');
   }
-  const ref = MediaRefSchema.safeParse(parsed);
+  const ref = MediaUploadResponseSchema.safeParse(parsed);
   if (!ref.success) throw new MediaError('upload_failed', 'broker answered the upload without a valid MediaRef');
   return ref.data;
 }
@@ -236,17 +289,12 @@ export class MediaStore {
     const url = `${endpoint.httpBase}${MEDIA_PATH}/${encodeURIComponent(ref.mediaId)}`;
     let response: Response;
     try {
-      response = await fetch(url, { headers: shimAuthHeaders(endpoint.token) });
+      response = await fetch(url, { headers: shimAuthHeaders(endpoint) });
     } catch (err) {
       throw new MediaError('download_failed', `download from ${url} failed: ${(err as Error).message}`);
     }
-    if (response.status === 404 || response.status === 410) {
-      throw new MediaError('not_found', `media ${ref.mediaId} has expired or is unknown to the broker`);
-    }
-    if (!response.ok || !response.body) {
-      const code = response.status === 401 || response.status === 403 ? 'unauthorized' : 'download_failed';
-      throw new MediaError(code, `download of ${ref.mediaId} failed with HTTP ${response.status}`);
-    }
+    if (!response.ok) throw mediaHttpError('download', ref.mediaId, response.status, await response.text().catch(() => ''));
+    if (!response.body) throw new MediaError('download_failed', `download of ${ref.mediaId} returned no body`);
 
     const hash = createHash('sha256');
     let bytes = 0;

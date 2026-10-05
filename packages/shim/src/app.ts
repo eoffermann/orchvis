@@ -260,19 +260,22 @@ class ShimCore implements ShimApi {
 
   private unreachable(err: unknown): Error {
     if (err instanceof BrokerUnreachableError) {
-      return new ToolError(
-        'broker_unreachable',
-        `could not reach the orchvis broker at ${err.url} (${err.reason}). Keep working and retry later.`,
-      );
+      const advice = err.permanent
+        ? 'This shim has stopped reconnecting; restart the session to try again. Keep working locally.'
+        : 'Keep working and retry later.';
+      return new ToolError('broker_unreachable', `could not reach the orchvis broker at ${err.url} (${err.reason}). ${advice}`);
     }
     return err as Error;
   }
 
-  private endpoint(): MediaEndpoint {
+  /** Media endpoint for the current connection: its upload key changes on every `welcome`. */
+  private endpoint(broker: BrokerClient): MediaEndpoint {
     if (!this.config.httpBase || !this.config.shimToken) {
       throw new ToolError('broker_unreachable', `no broker configured (${this.config.problem ?? 'unknown'})`);
     }
-    return { httpBase: this.config.httpBase, token: this.config.shimToken };
+    const uploadKey = broker.uploadKey;
+    if (!uploadKey) throw this.unreachable(new BrokerUnreachableError(broker.url, broker.notReadyReason));
+    return { httpBase: this.config.httpBase, token: this.config.shimToken, uploadKey };
   }
 
   private async resolveRepo(spec: string): Promise<RepoRef> {
@@ -349,9 +352,9 @@ class ShimCore implements ShimApi {
     if (args.attachments?.length) {
       try {
         const files = await validateAttachments(args.attachments, limits, this.cwd);
-        const endpoint = this.endpoint();
         for (const file of files) {
-          const ref = await uploadMedia(endpoint, file);
+          // Read per file: a reconnect between uploads brings a new upload key.
+          const ref = await uploadMedia(this.endpoint(broker), file);
           mediaIds.push(ref.mediaId);
           this.log.info(`uploaded attachment as ${ref.mediaId} (${ref.bytes} bytes)`);
         }
@@ -412,7 +415,7 @@ class ShimCore implements ShimApi {
     }
     const broker = this.requireBroker();
     try {
-      const fetched = await this.media.fetch(this.endpoint(), ref, broker.limits.mediaTtlMs);
+      const fetched = await this.media.fetch(this.endpoint(broker), ref, broker.limits.mediaTtlMs);
       return JSON.stringify(
         {
           path: fetched.path,
