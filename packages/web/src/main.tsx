@@ -13,12 +13,28 @@ function fakeRequested(params: URLSearchParams): boolean {
   return params.get('fake') === '1' || import.meta.env.VITE_ORCHVIS_FAKE === '1';
 }
 
+/** Whether this dev build should play the curated showcase scenario (`?fake=showcase`). */
+function showcaseRequested(params: URLSearchParams): boolean {
+  return import.meta.env.DEV && params.get('fake') === 'showcase';
+}
+
 async function boot(): Promise<void> {
   const params = new URLSearchParams(window.location.search);
   const store = createStore();
   let connect: TransportFactory;
-  if (fakeRequested(params)) {
-    // Dynamic import keeps the fake feed out of production bundles.
+  // `import.meta.env.DEV` must be written at each call site: Vite replaces it
+  // with `false` in production, and only then can Rollup drop the branch and
+  // its dynamic imports. Hidden inside a helper, the chunks would still ship.
+  if (import.meta.env.DEV && showcaseRequested(params)) {
+    const [{ showcaseTransport }, { showcaseMediaUrl }, { setMediaUrlOverride }] = await Promise.all([
+      import('./dev/showcase'),
+      import('./dev/showcaseAssets'),
+      import('./net/media'),
+    ]);
+    setMediaUrlOverride(showcaseMediaUrl);
+    connect = showcaseTransport();
+    console.info('[orchvis] playing the showcase scenario (synthetic data)');
+  } else if (import.meta.env.DEV && fakeRequested(params)) {
     const { fakeTransport } = await import('./dev/fakeFeed');
     const sessions = Number(params.get('n') ?? '30');
     connect = fakeTransport({ sessions: Number.isFinite(sessions) && sessions > 0 ? Math.min(60, sessions) : 30 });

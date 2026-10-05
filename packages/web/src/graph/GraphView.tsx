@@ -333,9 +333,6 @@ export function GraphView({ onSelect }: GraphViewProps) {
           {model.groups.map((g) => (
             <g key={g.key} className={g.matches ? 'hull' : 'hull hull--filtered'}>
               <path ref={hullPathEls.ref(g.key)} className="hull-path" fill={g.color} stroke={g.color} />
-              <text ref={hullLabelEls.ref(g.key)} className="hull-label" fill={g.color} textAnchor="middle">
-                {g.name}
-              </text>
             </g>
           ))}
         </g>
@@ -416,6 +413,20 @@ export function GraphView({ onSelect }: GraphViewProps) {
               </g>
             );
           })}
+        </g>
+        {/* Repo labels sit above the nodes, so a member of another hull never hides them. */}
+        <g className="layer-hull-labels">
+          {model.groups.map((g) => (
+            <text
+              key={g.key}
+              ref={hullLabelEls.ref(g.key)}
+              className={g.matches ? 'hull-label' : 'hull-label hull--filtered'}
+              fill={g.color}
+              textAnchor="middle"
+            >
+              {g.name}
+            </text>
+          ))}
         </g>
         <g className="layer-media">
           {model.edges.map((e) =>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { seededRandom } from '../src/dev/fakeFeed';
-import { GraphLayout, LAYOUT, entryPosition, groupCentroids, linkDistance } from '../src/graph/layout';
+import { GraphLayout, LAYOUT, entryPosition, groupAnchors, groupCentroids, linkDistance } from '../src/graph/layout';
 
 describe('linkDistance', () => {
   it('maps weight 0..20 to 320..90 px linearly and clamps outside', () => {
@@ -89,6 +89,20 @@ describe('GraphLayout', () => {
     t = settle(layout, t);
     expect(layout.sim.alphaTarget()).toBe(0);
     expect(layout.sim.alpha()).toBeLessThan(0.1);
+  });
+
+  it('starts separate groups apart, not tangled at the origin', () => {
+    const four = Array.from({ length: 24 }, (_, i) => ({ id: `h:${i}`, groups: [`g${i % 4}`] }));
+    const layout = new GraphLayout(seededRandom(5));
+    layout.update(four, [], 0);
+    const entry = groupCentroids(layout.allNodes());
+    const pts = [...entry.values()];
+    for (let i = 0; i < pts.length; i++) {
+      for (let j = i + 1; j < pts.length; j++) {
+        expect(Math.hypot(pts[i]!.x - pts[j]!.x, pts[i]!.y - pts[j]!.y)).toBeGreaterThan(200);
+      }
+    }
+    expect(groupAnchors([{ id: 'x', groups: ['solo'] }], new Map(), [])).toEqual(new Map([['solo', { x: 0, y: 0 }]]));
   });
 
   it('places a new node near its group centroid', () => {
