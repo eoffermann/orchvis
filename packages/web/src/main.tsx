@@ -22,8 +22,10 @@ async function boot(): Promise<void> {
   const params = new URLSearchParams(window.location.search);
   const store = createStore();
   let connect: TransportFactory;
-  if (showcaseRequested(params)) {
-    // Dynamic imports keep the scenario and its media out of production bundles.
+  // `import.meta.env.DEV` must be written at each call site: Vite replaces it
+  // with `false` in production, and only then can Rollup drop the branch and
+  // its dynamic imports. Hidden inside a helper, the chunks would still ship.
+  if (import.meta.env.DEV && showcaseRequested(params)) {
     const [{ showcaseTransport }, { showcaseMediaUrl }, { setMediaUrlOverride }] = await Promise.all([
       import('./dev/showcase'),
       import('./dev/showcaseAssets'),
@@ -32,8 +34,7 @@ async function boot(): Promise<void> {
     setMediaUrlOverride(showcaseMediaUrl);
     connect = showcaseTransport();
     console.info('[orchvis] playing the showcase scenario (synthetic data)');
-  } else if (fakeRequested(params)) {
-    // Dynamic import keeps the fake feed out of production bundles.
+  } else if (import.meta.env.DEV && fakeRequested(params)) {
     const { fakeTransport } = await import('./dev/fakeFeed');
     const sessions = Number(params.get('n') ?? '30');
     connect = fakeTransport({ sessions: Number.isFinite(sessions) && sessions > 0 ? Math.min(60, sessions) : 30 });
