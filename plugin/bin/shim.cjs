@@ -9438,7 +9438,7 @@ var require_websocket = __commonJS({
     var http = require("http");
     var net = require("net");
     var tls = require("tls");
-    var { randomBytes: randomBytes2, createHash: createHash2 } = require("crypto");
+    var { randomBytes: randomBytes3, createHash: createHash2 } = require("crypto");
     var { Duplex, Readable: Readable2 } = require("stream");
     var { URL: URL2 } = require("url");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -9989,7 +9989,7 @@ var require_websocket = __commonJS({
         }
       }
       const defaultPort = isSecure ? 443 : 80;
-      const key = randomBytes2(16).toString("base64");
+      const key = randomBytes3(16).toString("base64");
       const request = isSecure ? https.request : http.request;
       const protocolSet = /* @__PURE__ */ new Set();
       let perMessageDeflate;
@@ -35350,6 +35350,8 @@ async function writeAtomic(path, data) {
 var import_node_crypto3 = require("node:crypto");
 var import_node_fs2 = require("node:fs");
 var import_promises2 = require("node:fs/promises");
+var import_node_http = require("node:http");
+var import_node_https = require("node:https");
 var import_node_os3 = require("node:os");
 var import_node_path4 = require("node:path");
 var import_node_stream = require("node:stream");
@@ -35477,24 +35479,80 @@ async function validateAttachments(attachments, limits, cwd) {
   }
   return out;
 }
+function dispositionFilename(name) {
+  return name.replace(/[\r\n]/g, "").replace(/"/g, "%22");
+}
 async function uploadMedia(endpoint, file2) {
   const name = (0, import_node_path4.basename)(file2.absPath);
-  const blob = await (0, import_node_fs2.openAsBlob)(file2.absPath, { type: guessMime(name) });
-  const form = new FormData();
-  form.append(MEDIA_CAPTION_FIELD, file2.caption);
-  form.append(MEDIA_FILE_FIELD, blob, name);
-  let response;
-  try {
-    response = await fetch(`${endpoint.httpBase}${MEDIA_PATH}`, {
-      method: "POST",
-      headers: shimAuthHeaders(endpoint),
-      body: form
-    });
-  } catch (err) {
-    throw new MediaError("upload_failed", `upload to ${endpoint.httpBase}${MEDIA_PATH} failed: ${err.message}`);
+  const url2 = new URL(`${endpoint.httpBase}${MEDIA_PATH}`);
+  const boundary = `----orchvis-${(0, import_node_crypto3.randomBytes)(12).toString("hex")}`;
+  const head = Buffer.from(
+    `--${boundary}\r
+Content-Disposition: form-data; name="${MEDIA_CAPTION_FIELD}"\r
+\r
+${file2.caption}\r
+--${boundary}\r
+Content-Disposition: form-data; name="${MEDIA_FILE_FIELD}"; filename="${dispositionFilename(name)}"\r
+Content-Type: ${guessMime(name)}\r
+\r
+`
+  );
+  const tail = Buffer.from(`\r
+--${boundary}--\r
+`);
+  let answered = false;
+  async function* parts() {
+    yield head;
+    const source = (0, import_node_fs2.createReadStream)(file2.absPath);
+    try {
+      for await (const chunk of source) {
+        if (answered) return;
+        yield chunk;
+      }
+    } catch (err) {
+      if (answered) return;
+      throw err;
+    } finally {
+      source.destroy();
+    }
+    if (!answered) yield tail;
   }
-  const text = await response.text();
-  if (!response.ok) throw mediaHttpError("upload", name, response.status, text);
+  let status;
+  let text;
+  try {
+    ({ status, text } = await new Promise((resolveRes, rejectRes) => {
+      const body = import_node_stream.Readable.from(parts());
+      const send = url2.protocol === "https:" ? import_node_https.request : import_node_http.request;
+      const req = send(url2, {
+        method: "POST",
+        headers: { ...shimAuthHeaders(endpoint), "content-type": `multipart/form-data; boundary=${boundary}` }
+      });
+      const failEarly = (err) => {
+        if (answered) return;
+        answered = true;
+        body.destroy();
+        req.destroy();
+        rejectRes(err);
+      };
+      req.on("error", failEarly);
+      body.on("error", failEarly);
+      req.on("response", (res) => {
+        answered = true;
+        body.unpipe(req);
+        body.destroy();
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => resolveRes({ status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString("utf8") }));
+        res.on("error", rejectRes);
+        res.on("aborted", () => rejectRes(new Error("the broker closed the connection mid-response")));
+      });
+      body.pipe(req);
+    }));
+  } catch (err) {
+    const e = err;
+    throw new MediaError("upload_failed", `upload to ${url2.origin}${MEDIA_PATH} failed: ${e.code ?? e.message}`);
+  }
+  if (status < 200 || status >= 300) throw mediaHttpError("upload", name, status, text);
   let parsed;
   try {
     parsed = JSON.parse(text);

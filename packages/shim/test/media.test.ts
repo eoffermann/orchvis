@@ -171,6 +171,42 @@ describe('upload and fetch against the fake broker', () => {
   });
 });
 
+describe('uploadMedia when the broker answers before the file is sent', () => {
+  let broker: FakeBroker;
+  let dir: string;
+  beforeAll(async () => {
+    broker = await startFakeBroker();
+    dir = mkdtempSync(join(tmpdir(), 'orchvis-early-'));
+  });
+  afterAll(async () => {
+    await broker.close();
+  });
+
+  // Regression: the 413 arrived while the file was still streaming, the file was
+  // then rewritten, and the HTTP client's background read of it rejected with
+  // nothing to catch it. Vitest fails the run on any unhandled rejection.
+  it('reports the answer, and a file changed mid-upload raises nothing unhandled', async () => {
+    const src = join(dir, 'big.bin');
+    writeFileSync(src, Buffer.alloc(8 * 1024 * 1024, 1));
+    broker.failNextMedia(413, { error: 'too_large', detail: 'over maxMediaBytes' });
+    const upload = uploadMedia(
+      { httpBase: broker.url, token: broker.shimToken, uploadKey: broker.issueUploadKey() },
+      { absPath: src, caption: 'c' },
+    );
+    writeFileSync(src, 'rewritten while uploading');
+    await expect(upload).rejects.toMatchObject({ code: 'too_large' });
+    await new Promise((r) => setTimeout(r, 200));
+  });
+
+  it('sees a 401 to a streamed upload (fetch would hide it as a network error)', async () => {
+    const src = join(dir, 'small.txt');
+    writeFileSync(src, 'abc');
+    await expect(
+      uploadMedia({ httpBase: broker.url, token: 'wrong', uploadKey: broker.issueUploadKey() }, { absPath: src, caption: 'c' }),
+    ).rejects.toMatchObject({ code: 'unauthorized' });
+  });
+});
+
 describe('mediaHttpError', () => {
   it('maps an expired download to not_found and survives a non-JSON body', () => {
     expect(mediaHttpError('download', 'm1', 404, '{"error":"not_found"}')).toMatchObject({ code: 'not_found' });
