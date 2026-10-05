@@ -116,6 +116,19 @@ export function formatCountdown(ms: number): string {
   return `${s}s`;
 }
 
+/**
+ * How long ago something happened, coarsely: `just now`, `12m ago`, `5h ago`,
+ * `3d ago`. Used for disconnected sessions, which stay for days.
+ */
+export function formatAgo(ms: number): string {
+  const min = Math.floor(ms / 60_000);
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min}m ago`;
+  const h = Math.floor(min / 60);
+  if (h < 48) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
 /** Human file size. */
 export function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
