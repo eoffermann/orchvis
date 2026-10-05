@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, type PointerEvent as ReactPointerEvent } from 'react';
 import type { MediaKind } from '@orchvis/protocol';
+import { formatAgo } from '../overlays/model';
 import type { Selection } from '../store/types';
 import { useAppState, useStoreInstance } from '../store/useStore';
 import { hullPath, hullTop, paddedHull, type Point } from './hull';
@@ -390,7 +391,8 @@ export function GraphView({ onSelect }: GraphViewProps) {
                 onKeyDown={n.matches ? onActivateKey(() => select({ kind: 'node', id: n.id })) : undefined}
               >
                 <title>
-                  {s.name} on {s.hostname}: {s.status}, {s.delivery} mode{s.connected ? '' : ', disconnected'}
+                  {s.name} on {s.hostname}: {s.status}, {s.delivery} mode
+                  {s.connected ? '' : `, disconnected, last seen ${formatAgo(state.now - s.lastSeen)}`}
                 </title>
                 <circle ref={haloEls.ref(n.id)} className="node-halo" r={NODE_RADIUS} stroke={HALO_COLOR} opacity={0} />
                 <circle className="node-hit" r={MIN_HIT_PX / 2 + 4} />
@@ -400,7 +402,7 @@ export function GraphView({ onSelect }: GraphViewProps) {
                   {s.name}
                 </text>
                 <text className="node-host" y={NODE_RADIUS + 34} textAnchor="middle">
-                  {s.hostname}
+                  {s.connected ? s.hostname : `${s.hostname} · last seen ${formatAgo(state.now - s.lastSeen)}`}
                 </text>
                 {s.delivery === 'poll' && (
                   <g className="node-badge" transform={`translate(${NODE_RADIUS - 4},${-NODE_RADIUS + 4})`}>

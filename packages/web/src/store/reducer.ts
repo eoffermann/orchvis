@@ -177,15 +177,48 @@ function pruneView(state: AppState): AppState {
   };
 }
 
+/** Whether a thread ID names the given participant key. */
+function threadHas(threadId: string, key: string): boolean {
+  return threadId.split('|').includes(key);
+}
+
+/**
+ * `node {op:'remove'}` is a purge: the node, every thread it took part in (edge,
+ * buffered messages, media index entries, tombstones) and any control naming
+ * them go, so the state still equals a fresh snapshot.
+ */
 function applyNode(state: AppState, frame: FrameOf<BrokerToUiFrame, 'node'>): AppState {
   const p = frame.payload;
   if (p.op === 'upsert') {
     return withData(state, { nodes: { ...state.data.nodes, [p.node.id]: p.node } });
   }
-  if (!(p.id in state.data.nodes)) return state;
-  const nodes = { ...state.data.nodes };
+  const d = state.data;
+  const gone = new Set(
+    [...Object.keys(d.edges), ...Object.keys(d.messages)].filter((threadId) => threadHas(threadId, p.id)),
+  );
+  if (!(p.id in d.nodes) && gone.size === 0) return state;
+
+  const nodes = { ...d.nodes };
   delete nodes[p.id];
-  return pruneView(withData(state, { nodes }));
+  const edges = { ...d.edges };
+  const messages = { ...d.messages };
+  const messageThread = { ...d.messageThread };
+  const expiredMedia = { ...d.expiredMedia };
+  for (const threadId of gone) {
+    delete edges[threadId];
+    for (const m of messages[threadId] ?? []) {
+      delete messageThread[m.id];
+      for (const a of m.attachments) delete expiredMedia[a.mediaId];
+    }
+    delete messages[threadId];
+  }
+  const media = Object.fromEntries(Object.entries(d.media).filter(([, e]) => !gone.has(e.threadId)));
+  const control = {
+    ...d.control,
+    mutedThreads: d.control.mutedThreads.filter((t) => !gone.has(t)),
+    pausedSessions: d.control.pausedSessions.filter((s) => s !== p.id),
+  };
+  return pruneView(withData(state, { nodes, edges, messages, messageThread, media, expiredMedia, control }));
 }
 
 function applyMessage(state: AppState, frame: FrameOf<BrokerToUiFrame, 'message'>): AppState {

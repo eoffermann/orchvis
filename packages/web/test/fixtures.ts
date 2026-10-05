@@ -4,7 +4,9 @@ import {
   sessionAddress,
   threadIdFor,
   type BrokerToUiFrame,
+  type ControlState,
   type EdgeStats,
+  type MediaStoreUsage,
   type MediaIndexEntry,
   type Message,
   type SessionNode,
@@ -97,7 +99,15 @@ export function mediaEntry(msg: Message, mediaId: string): MediaIndexEntry {
 
 export function snapshotFrame(
   mk: ReturnType<typeof frames>,
-  parts: { nodes?: SessionNode[]; edges?: EdgeStats[]; messages?: Message[]; media?: MediaIndexEntry[]; now?: number } = {},
+  parts: {
+    nodes?: SessionNode[];
+    edges?: EdgeStats[];
+    messages?: Message[];
+    media?: MediaIndexEntry[];
+    now?: number;
+    control?: ControlState;
+    mediaStore?: MediaStoreUsage;
+  } = {},
 ): BrokerToUiFrame {
   return mk('snapshot', {
     brokerVersion: 'test',
@@ -108,7 +118,7 @@ export function snapshotFrame(
     edges: parts.edges ?? [],
     messages: parts.messages ?? [],
     media: parts.media ?? [],
-    control: { mutedThreads: [], pausedSessions: [], pausedAll: false },
-    mediaStore: { bytes: 0, capBytes: DEFAULT_LIMITS.mediaStoreBytes, files: 0 },
+    control: parts.control ?? { mutedThreads: [], pausedSessions: [], pausedAll: false },
+    mediaStore: parts.mediaStore ?? { bytes: 0, capBytes: DEFAULT_LIMITS.mediaStoreBytes, files: 0 },
   });
 }

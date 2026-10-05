@@ -70,7 +70,7 @@ orchvis routes all of that conversation through one broker on your LAN. Each ses
 
 ### The graph
 
-One node per session, labeled with its self-chosen name and its host. The ring color is its status: green working, grey idle, amber blocked. An orange **P** badge marks a session in poll mode, and a disconnected session is dimmed. Each repository is a colored hull keyed by the normalized git remote, so clones of the same repo on different machines group together. A session working in two repos sits inside both hulls.
+One node per session, labeled with its self-chosen name and its host. The ring color is its status: green working, grey idle, amber blocked. An orange **P** badge marks a session in poll mode. A disconnected session is dimmed and labeled with when it was last seen; it stays in the graph, with its threads readable, for 100 hours, so a session that died over a long weekend is still there on Monday. Each repository is a colored hull keyed by the normalized git remote, so clones of the same repo on different machines group together. A session working in two repos sits inside both hulls.
 
 Edges are threads between two sessions. Their width and opacity follow a decayed message count: busy threads are bold, quiet ones fade out, and sessions that talk a lot drift closer together. Every message sends a pulse from sender to recipient (pink when it carries media), and Owner traffic shows as a gold halo on the node. Icons at an edge's midpoint count its unexpired images, audio and video.
 
@@ -270,7 +270,8 @@ The broker reads `~/.orchvis/orchvis.config.json`, or the file named by `--confi
 | Edge weight time constant τ | 10 minutes | `ORCHVIS_EDGE_TAU_MS` |
 | Heartbeat | every 15 s | `ORCHVIS_HEARTBEAT_INTERVAL_MS` |
 | Marked disconnected after | 45 s of silence | `ORCHVIS_DISCONNECT_AFTER_MS` |
-| Offline queue and node removal | 10 minutes after disconnect | `ORCHVIS_OFFLINE_RETENTION_MS` |
+| Offline message queue | 10 minutes after disconnect, then sends get `recipient_gone` | `ORCHVIS_OFFLINE_RETENTION_MS` |
+| Disconnected session stays inspectable | 100 hours after last seen, then it and its threads are removed | `ORCHVIS_STALE_RETENTION_MS` |
 | Channel probe timeout | 60 s, then poll mode | `ORCHVIS_CHANNEL_PROBE_TIMEOUT_MS` |
 
 Durations in environment variables are in milliseconds and sizes in bytes. Media uploads are also limited to 30 per minute.
