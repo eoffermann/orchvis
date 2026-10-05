@@ -47,6 +47,9 @@ export type UiDelta = { [T in UiDeltaType]: { type: T; payload: PayloadOf<Broker
 /** Payload of a `snapshot` frame. */
 export type SnapshotPayload = PayloadOf<BrokerToUiFrame, 'snapshot'>;
 
+/** Longest delay a Node timer honors; longer retentions are reached in steps. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
 /** Version string the mock reports as `brokerVersion`. */
 export const MOCK_BROKER_VERSION = 'mock-0.1.0';
 
@@ -81,7 +84,7 @@ interface PendingUpload extends StoredMedia {
 
 interface Slot {
   spec: SimSessionSpec;
-  /** Set while the node is retiring: it will be removed and replaced. */
+  /** Set while the node is retiring: a fresh session will take the slot. */
   retiring: boolean;
   /** Unseen delivered message IDs waiting for this session to read them. */
   unseen: string[];
@@ -111,6 +114,8 @@ export class MockWorld implements TrafficSink {
   private readonly messageIndex = new Map<string, Message>();
   private readonly media = new Map<string, MediaIndexEntry & { data: Uint8Array }>();
   private readonly uploads = new Map<string, PendingUpload>();
+  /** Retired sessions past `offlineRetentionMs`: still shown, sends to them rejected. Each is dropped at its purge. */
+  private readonly gone = new Set<SessionId>();
   private control: ControlState = { mutedThreads: [], pausedSessions: [], pausedAll: false };
   private usage: MediaStoreUsage;
   private readonly listeners = new Set<(delta: UiDelta) => void>();
@@ -228,7 +233,8 @@ export class MockWorld implements TrafficSink {
       to = OWNER_ADDRESS;
     } else {
       const target = this.slots[intent.to];
-      if (!target || !this.nodes.has(target.spec.sessionId) || target.spec.sessionId === fromNode.id) return undefined;
+      const targetId = target?.spec.sessionId;
+      if (!targetId || !this.nodes.has(targetId) || this.gone.has(targetId) || targetId === fromNode.id) return undefined;
       to = sessionAddress(target.spec.sessionId);
     }
     const from = sessionAddress(fromNode.id);
@@ -263,7 +269,7 @@ export class MockWorld implements TrafficSink {
     const now = this.clock.now();
     this.upsertNode({ ...node, connected: false, lastSeen: now });
     if (downMs > 60_000 && this.rng.chance(this.churnRate)) {
-      // Gone for good: removed once offline retention runs out, then a fresh session takes the slot.
+      // Gone for good: once offline retention runs out a fresh session takes the slot, and the old node is purged later.
       slot.retiring = true;
       this.timers.after(this.limits.offlineRetentionMs, () => this.retire(index));
       return;
@@ -276,13 +282,23 @@ export class MockWorld implements TrafficSink {
     });
   }
 
+  /**
+   * Offline retention ran out for a session that will not come back, as on
+   * the broker: its queue is dropped and sends to it are rejected, but it
+   * stays in the graph, disconnected, with its threads and media, until
+   * `staleRetentionMs` after it was last seen, when it is purged. A fresh
+   * session takes the slot shortly after.
+   */
   private retire(index: number): void {
     const slot = this.slots[index];
     if (!slot) return;
     const oldId = slot.spec.sessionId;
-    this.nodes.delete(oldId);
+    const node = this.nodes.get(oldId);
     slot.unseen = [];
-    this.publish({ type: 'node', payload: { op: 'remove', id: oldId } });
+    if (node) {
+      this.gone.add(oldId);
+      this.afterLong(node.lastSeen + this.limits.staleRetentionMs - this.clock.now(), () => this.purge(oldId));
+    }
     this.timers.after(this.rng.range(10_000, 60_000), () => {
       const claudeSessionId = this.rng.uuid();
       const taken = new Set([...this.nodes.values()].map((n) => n.name.toLowerCase()));
@@ -295,6 +311,44 @@ export class MockWorld implements TrafficSink {
     });
   }
 
+  /** Runs `callback` after `delayMs`, in steps no longer than a Node timer allows. */
+  private afterLong(delayMs: number, callback: () => void): void {
+    if (delayMs > MAX_TIMER_DELAY_MS) this.timers.after(MAX_TIMER_DELAY_MS, () => this.afterLong(delayMs - MAX_TIMER_DELAY_MS, callback));
+    else this.timers.after(Math.max(0, delayMs), callback);
+  }
+
+  /**
+   * Purges a stale session, announced as the broker does it: a `media` expire
+   * for each item on its threads, then the `node` remove (the threads,
+   * messages and edges go with it), then `control_state` if a control named
+   * the session or one of its threads.
+   */
+  private purge(id: SessionId): void {
+    if (!this.nodes.has(id)) return;
+    const involves = (threadId: string) => threadId.split('|').includes(id);
+    for (const m of [...this.media.values()]) if (involves(m.threadId)) this.expire(m.ref.mediaId);
+    for (const [threadId, buffer] of [...this.threads]) {
+      if (!involves(threadId)) continue;
+      for (const m of buffer) this.messageIndex.delete(m.id);
+      this.threads.delete(threadId);
+    }
+    for (const threadId of [...this.edges.keys()]) if (involves(threadId)) this.edges.delete(threadId);
+    for (const [mediaId, up] of [...this.uploads]) if (up.uploader === id) this.uploads.delete(mediaId);
+    this.nodes.delete(id);
+    this.gone.delete(id);
+    this.publish({ type: 'node', payload: { op: 'remove', id } });
+    const c = this.control;
+    const next: ControlState = {
+      mutedThreads: c.mutedThreads.filter((t) => !involves(t)),
+      pausedSessions: c.pausedSessions.filter((s) => s !== id),
+      pausedAll: c.pausedAll,
+    };
+    if (next.mutedThreads.length !== c.mutedThreads.length || next.pausedSessions.length !== c.pausedSessions.length) {
+      this.control = next;
+      this.publish({ type: 'control_state', payload: structuredClone(next) });
+    }
+  }
+
   // ---- Owner actions ----
 
   /**
@@ -305,6 +359,7 @@ export class MockWorld implements TrafficSink {
   ownerSend(payload: PayloadOf<UiToBrokerFrame, 'owner_send'>): OwnerSendResult {
     const node = this.nodes.get(payload.to);
     if (!node) return { ok: false, code: 'unknown_recipient', detail: `no session ${payload.to}` };
+    if (this.gone.has(node.id)) return { ok: false, code: 'recipient_gone', detail: 'past its offline retention; history still readable' };
     if (utf8Bytes(payload.body) > this.limits.maxBodyBytes) return { ok: false, code: 'too_large', detail: 'body over the size limit' };
     if (new Set(payload.attachments).size !== payload.attachments.length) {
       return { ok: false, code: 'invalid', detail: 'duplicate attachment' };
