@@ -101,6 +101,21 @@ export async function spawnShim(options: SpawnShimOptions = {}): Promise<ShimPro
     for (const l of [...listeners]) l();
   };
   await client.connect(transport);
+  // When the shim process dies, say how, so a failed call shows the cause and
+  // not just "Connection closed".
+  let exitInfo = '';
+  (transport as unknown as { _process?: import('node:child_process').ChildProcess })._process?.on(
+    'exit',
+    (code, signal) => {
+      const hex = code !== null && code > 255 ? ` (0x${code.toString(16).toUpperCase()})` : '';
+      exitInfo = `shim process exited: code ${code}${hex}, signal ${signal}`;
+    },
+  );
+  const diagnose = (err: unknown): Error => {
+    const e = err instanceof Error ? err : new Error(String(err));
+    e.message += `\n${exitInfo || 'shim process still running'}\nshim stderr (last 2000 chars):\n${stderr.slice(-2000)}`;
+    return e;
+  };
 
   const channel = (): ChannelNote[] =>
     notifications
@@ -138,7 +153,9 @@ export async function spawnShim(options: SpawnShimOptions = {}): Promise<ShimPro
       });
     },
     async call(name, args = {}) {
-      const result = (await client.callTool({ name, arguments: args })) as {
+      const result = (await client.callTool({ name, arguments: args }).catch((err: unknown) => {
+        throw diagnose(err);
+      })) as {
         content: Array<{ type: string; text?: string }>;
         isError?: boolean;
       };
