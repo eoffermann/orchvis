@@ -11,6 +11,7 @@ import {
   decodeFrame,
   encodeFrame,
   mediaKindOf,
+  toPeerInfo,
   type BrokerToShimFrame,
   type BrokerToUiFrame,
   type EdgeStats,
@@ -41,6 +42,7 @@ const message: Message = {
   id: ULID,
   threadId: 'mediaroomwindows:1111|owner',
   from: { kind: 'owner' },
+  fromName: 'owner',
   to: { kind: 'session', id: 'mediaroomwindows:1111' },
   senderKind: 'owner',
   kind: 'chat',
@@ -106,16 +108,16 @@ describe('frame round trips', () => {
       sessionId: node.id,
       name: 'ORCH-UI',
       limits: { ...DEFAULT_LIMITS },
-      peers: [node],
+      peers: [toPeerInfo(node)],
       brokerVersion: '0.1.0',
       protocolVersion: 1,
     }),
-    toShim('registered', { re: 's2', name: 'ORCH-UI-2', peers: [] }),
+    toShim('registered', { re: 's2', sessionId: 'mediaroomwindows:0000', name: 'ORCH-UI-2', peers: [] }),
     toShim('sent', { re: 's3', messageId: ULID, threadId: message.threadId, ts: 5 }),
     toShim('rejected', { re: 's3', code: 'rate_limited', detail: 'slow down' }),
     toShim('deliver', { message }),
     toShim('thread', { re: 's8', threadId: message.threadId, messages: [message] }),
-    toShim('peers', { peers: [node] }),
+    toShim('peers', { peers: [toPeerInfo(node)] }),
     toShim('ping', {}),
   ];
 
@@ -143,7 +145,8 @@ describe('frame round trips', () => {
     toUi('node', { op: 'upsert', node }),
     toUi('node', { op: 'remove', id: node.id }),
     toUi('message', { message, edge }),
-    toUi('seen', { by: node.id, ids: [ULID] }),
+    toUi('message', { message: { ...message, seenAt: 6 }, edge }),
+    toUi('seen', { by: node.id, ids: [ULID], seenAt: 7 }),
     toUi('media', { op: 'expire', mediaId: 'm1', threadId: message.threadId, edge, mediaStore }),
     toUi('control_state', { mutedThreads: [message.threadId], pausedSessions: [], pausedAll: true }),
     toUi('rejected', { re: 'u1', code: 'unknown_recipient', detail: '' }),
@@ -216,6 +219,17 @@ describe('decodeFrame rejections', () => {
 });
 
 describe('model', () => {
+  it('keeps cwd away from peers', () => {
+    const peer = toPeerInfo(node);
+    expect('cwd' in peer).toBe(false);
+    expect(peer.name).toBe(node.name);
+  });
+
+  it('requires fromName on a message', () => {
+    const { fromName: _f, ...rest } = message;
+    expect(MessageSchema.safeParse(rest).success).toBe(false);
+  });
+
   it('requires a caption on media', () => {
     const bad = { ...message, attachments: [{ ...message.attachments[0], caption: '' }] };
     expect(MessageSchema.safeParse(bad).success).toBe(false);

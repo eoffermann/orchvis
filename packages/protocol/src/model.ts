@@ -51,6 +51,21 @@ export const SessionNodeSchema = z.object({
 /** One Claude Code session as known to the broker. */
 export type SessionNode = z.infer<typeof SessionNodeSchema>;
 
+/**
+ * A session as other sessions see it: a {@link SessionNode} without `cwd`,
+ * which is shown only to the Owner.
+ */
+export const PeerInfoSchema = SessionNodeSchema.omit({ cwd: true });
+
+/** A session as other sessions see it. */
+export type PeerInfo = z.infer<typeof PeerInfoSchema>;
+
+/** Strips the fields peers do not get from a node. */
+export function toPeerInfo(node: SessionNode): PeerInfo {
+  const { cwd: _cwd, ...peer } = node;
+  return peer;
+}
+
 /** Broad media category, used for edge icons and the media browser filter. */
 export const MediaKindSchema = z.enum(['image', 'audio', 'video', 'other']);
 
@@ -64,7 +79,12 @@ export function mediaKindOf(mime: string): MediaKind {
   return 'other';
 }
 
-/** A short-lived attachment held in the broker's media store. */
+/**
+ * A short-lived attachment held in the broker's media store. Media is single
+ * use: only the connection that uploaded it may attach it, and only to one
+ * message. Any other attach is rejected with `invalid`. So each media ID
+ * belongs to exactly one message and one thread.
+ */
 export const MediaRefSchema = z.object({
   mediaId: z.string().min(1).max(64),
   mime: z.string().min(1).max(255),
@@ -103,6 +123,11 @@ export const MessageSchema = z.object({
   /** Sorted participant pair; see `threadIdFor`. */
   threadId: z.string().min(1),
   from: AddressSchema,
+  /**
+   * The sender's session name at send time, or `owner`. Stamped by the broker,
+   * so it stays readable after the sender disconnects or is removed.
+   */
+  fromName: z.string().min(1).max(64),
   to: AddressSchema,
   /** Set by the broker from the connection, never by the sender. */
   senderKind: SenderKindSchema,
@@ -113,6 +138,11 @@ export const MessageSchema = z.object({
   attachments: z.array(MediaRefSchema),
   /** Broker clock, milliseconds since epoch. */
   ts: z.number(),
+  /**
+   * Broker clock time the recipient reported it read the message. Absent until
+   * then. Messages to the Owner never get one.
+   */
+  seenAt: z.number().optional(),
 });
 
 /** A routed message. */

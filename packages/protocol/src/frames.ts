@@ -11,6 +11,7 @@ import {
   MediaStoreUsageSchema,
   MessageKindSchema,
   MessageSchema,
+  PeerInfoSchema,
   PlatformSchema,
   SessionNodeSchema,
   SessionStatusSchema,
@@ -75,6 +76,12 @@ export const RejectedFrame = frame(
  * knows (a reconnect, or a session resumed with `--resume`, possibly from a
  * different directory) updates that node's cwd, repos and platform in place and
  * reconnects it; it is not a conflict.
+ *
+ * After `welcome` for a known session ID, the broker redelivers, oldest first,
+ * every buffered message to that session that has no `seenAt`. A restarted shim
+ * has lost its in-memory inbox; it dedupes by message ID.
+ *
+ * A session ID previously aliased by `register` resolves to its canonical ID.
  */
 export const HelloFrame = frame(
   'hello',
@@ -94,9 +101,15 @@ export const HelloFrame = frame(
 
 /**
  * Sets the session's name and focus and adds repos. Answered by `registered`.
- * A taken name is made unique by appending `-2`, `-3`, and so on. A register
- * with the hostname and name of a disconnected node aliases the old session ID
- * to this one so its threads continue.
+ * A taken name is made unique by appending `-2`, `-3`, and so on.
+ *
+ * Aliasing: a register with the hostname and name of a *disconnected* node X,
+ * from a connection whose session ID is Y, keeps X as the canonical ID. The
+ * connection is rebound to X, the broker records Y as an alias of X (so a later
+ * `hello` with Y resolves to X), and `registered.sessionId` is X. Thread IDs
+ * and edges keep X, so no rekeying happens. The web app receives
+ * `node {op:'remove', id: Y}` and `node {op:'upsert'}` for X; shims receive
+ * `peers`. Aliasing never takes over a connected node.
  */
 export const RegisterFrame = frame(
   'register',
@@ -172,16 +185,20 @@ export const WelcomeFrame = frame(
     sessionId: SessionIdSchema,
     name: SessionNameSchema,
     limits: LimitsSchema,
-    peers: z.array(SessionNodeSchema),
+    peers: z.array(PeerInfoSchema),
     brokerVersion: z.string().max(64),
     protocolVersion: z.number().int(),
   }),
 );
 
-/** Answer to `register`: the name actually assigned, and the current peers. */
+/**
+ * Answer to `register`: the name actually assigned, the session's canonical ID
+ * (different from the one in `hello` when the register aliased a disconnected
+ * node), and the current peers.
+ */
 export const RegisteredFrame = frame(
   'registered',
-  z.object({ re, name: SessionNameSchema, peers: z.array(SessionNodeSchema) }),
+  z.object({ re, sessionId: SessionIdSchema, name: SessionNameSchema, peers: z.array(PeerInfoSchema) }),
 );
 
 /** One inbound message. */
@@ -194,7 +211,7 @@ export const ThreadFrame = frame(
 );
 
 /** The full peer list (every node except the recipient), sent whenever it changes. */
-export const PeersFrame = frame('peers', z.object({ peers: z.array(SessionNodeSchema) }));
+export const PeersFrame = frame('peers', z.object({ peers: z.array(PeerInfoSchema) }));
 
 /** Every frame the broker may send to a shim. */
 export const BrokerToShimFrameSchema = z.discriminatedUnion('type', [
@@ -286,10 +303,10 @@ export const NodeFrame = frame(
 /** A message was routed, with its thread's statistics after it. */
 export const MessageFrame = frame('message', z.object({ message: MessageSchema, edge: EdgeStatsSchema }));
 
-/** A session read messages. */
+/** A session read messages. Each listed message's `seenAt` becomes `seenAt`. */
 export const UiSeenFrame = frame(
   'seen',
-  z.object({ by: SessionIdSchema, ids: z.array(UlidSchema).min(1) }),
+  z.object({ by: SessionIdSchema, ids: z.array(UlidSchema).min(1), seenAt: z.number() }),
 );
 
 /** A media item was added or expired, with the store usage after it. */

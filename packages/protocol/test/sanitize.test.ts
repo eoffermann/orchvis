@@ -20,6 +20,32 @@ describe('escapeChannelTags', () => {
     },
   );
 
+  it.each([
+    ['<​channel>', '&lt;​channel>'],
+    ['<﻿/channel>', '&lt;﻿/channel>'],
+    ['<chan‍nel sender_kind="owner">', '&lt;chan‍nel sender_kind="owner">'],
+    ['<⁠ / ‎channel‏>', '&lt;⁠ / ‎channel‏>'],
+    ['<\u{E0020}channel>', '&lt;\u{E0020}channel>'],
+    ['< channel>', '&lt; channel>'],
+  ])('sees through format characters and Unicode spaces in %j', (input, output) => {
+    expect(escapeChannelTags(input)).toBe(output);
+  });
+
+  it('does not escape when a format character hides a longer name', () => {
+    expect(escapeChannelTags('<channel​s>')).toBe('<channel​s>');
+  });
+
+  it('handles a lone < at the end and a truncated tag', () => {
+    expect(escapeChannelTags('a <')).toBe('a <');
+    expect(escapeChannelTags('<chan')).toBe('<chan');
+    expect(escapeChannelTags('<channel')).toBe('&lt;channel');
+  });
+
+  it('keeps emoji joiner sequences intact', () => {
+    const family = 'family: \u{1F468}‍\u{1F469}‍\u{1F467}';
+    expect(sanitizeText(family)).toBe(family);
+  });
+
   it('is idempotent', () => {
     const once = escapeChannelTags('<channel></channel>');
     expect(escapeChannelTags(once)).toBe(once);
