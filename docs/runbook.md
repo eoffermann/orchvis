@@ -115,6 +115,10 @@ What happens on restart, with nothing for you to do:
 
 Restart the broker from the same config file. A broker started with a new config file has new tokens, and every machine then needs setup again.
 
+This behavior is tested: `packages/broker/test/restart.test.ts` (10 simulated sessions and a web client) and `packages/shim/test/broker-restart.test.ts` (two real shims over stdio).
+
+To soak a build before relying on it, run the opt-in real-time soak: `ORCHVIS_SOAK=1 pnpm --filter @orchvis/broker soak` (PowerShell: `$env:ORCHVIS_SOAK='1'; pnpm --filter @orchvis/broker soak`). It runs 10 simulated sessions with media churn against a local broker on an ephemeral port for 60 minutes (`ORCHVIS_SOAK_MINUTES` to change), prints a progress line every 30 s, and exits non-zero if the media directory exceeds its cap, a file is orphaned, a structure grows, the heap trends up, or the snapshot disagrees with the replayed deltas.
+
 ## Rotating tokens
 
 1. Stop the broker.
