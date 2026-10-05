@@ -1,4 +1,4 @@
-import { bumpEdge, threadParticipants, addressKey, type EdgeStats, type Message } from '@orchvis/protocol';
+import { bumpEdge, threadParticipants, addressKey, type EdgeStats, type MediaKind, type Message } from '@orchvis/protocol';
 
 /** Result of {@link ThreadStore.append}. */
 export interface AppendResult {
@@ -90,5 +90,17 @@ export class ThreadStore {
   /** Statistics for one thread. */
   edge(threadId: string): EdgeStats | undefined {
     return this.edges.get(threadId);
+  }
+
+  /**
+   * Changes a thread's unexpired media count for one kind by `delta`, never
+   * below zero. Returns a copy of the edge after the change, or undefined when
+   * the thread has no edge yet.
+   */
+  adjustMedia(threadId: string, kind: MediaKind, delta: number): EdgeStats | undefined {
+    const edge = this.edges.get(threadId);
+    if (!edge) return undefined;
+    edge.media = { ...edge.media, [kind]: Math.max(0, edge.media[kind] + delta) };
+    return { ...edge, media: { ...edge.media } };
   }
 }
