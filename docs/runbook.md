@@ -9,6 +9,7 @@ How to run the Orchestration Visualizer across machines, bring a network of sess
 - [Session machines](#session-machines)
 - [Bringing the network up from a host session](#bringing-the-network-up-from-a-host-session)
 - [Delivery modes](#delivery-modes)
+- [Stale sessions](#stale-sessions)
 - [Broker restart](#broker-restart)
 - [Rotating tokens](#rotating-tokens)
 - [Troubleshooting](#troubleshooting)
@@ -25,7 +26,7 @@ One broker runs on an always-on machine on the LAN. Every Claude Code session ru
 | Shim config | every session machine, `~/.orchvis/config.json` | broker URL, **shim token** |
 | Inbox mirror | every session machine, `~/.orchvis/inbox/<Claude session id>.json` (the raw `CLAUDE_CODE_SESSION_ID`, without the host prefix) | unread messages, for the poll-mode hooks |
 | Broker log | broker host, `~/.orchvis/broker.log`, only when started with `--background` | structured lines; never message bodies, captions, filenames or tokens |
-| Media store | broker host, a per-process directory under the OS temp dir | uploads, deleted on expiry and wiped on start and clean shutdown |
+| Media store | broker host, a per-process directory under the OS temp dir | uploads, deleted on expiry or when a session on their thread is purged, and wiped on start and clean shutdown |
 
 Keep both config files outside every repository working tree. Never paste them into a chat, an issue or a session: they hold the tokens. The broker never prints a token, and neither do the setup scripts.
 
@@ -68,6 +69,8 @@ Requirements: Node 20 or later, pnpm 9, a clone of this repository, and `pnpm in
 
 Settings in the config file can be overridden per run with environment variables: `ORCHVIS_PORT`, `ORCHVIS_BIND`, `ORCHVIS_SHIM_TOKEN`, `ORCHVIS_OWNER_TOKEN`, and one per limit (`ORCHVIS_MAX_BODY_BYTES`, `ORCHVIS_MEDIA_TTL_MS`, ...; `--help` lists them all). The defaults are in the README's limits table.
 
+Two limits control how long a session that has gone away is kept (see [Stale sessions](#stale-sessions)): `offlineRetentionMs` (`ORCHVIS_OFFLINE_RETENTION_MS`, 10 minutes), how long messages are queued for it, and `staleRetentionMs` (`ORCHVIS_STALE_RETENTION_MS`, 100 hours), how long after it was last seen it stays in the graph with its history and media. The stale retention must be at least the offline retention; the broker refuses to start otherwise and names both settings.
+
 ## Session machines
 
 On every machine that runs Claude Code sessions:
@@ -103,13 +106,27 @@ A polling session that is idle cannot be woken: it sees messages on its next pro
 
 The hooks print nothing in push mode (the channel already delivered), right after `check_inbox`, and for messages they have already shown. A silent hook is normally one of those cases, not a fault.
 
+## Stale sessions
+
+A session that dies over a long weekend is still there on Monday. When a session disconnects (its terminal closed, its machine slept, the network dropped), the broker keeps it in three stages:
+
+| Time since it went away | Graph and `list_peers` | Sending to it | History and media |
+|---|---|---|---|
+| up to 10 minutes | shown as disconnected | accepted and queued; delivered when it reconnects | readable |
+| 10 minutes to 100 hours after it was last seen | shown as disconnected | rejected with `recipient_gone` | readable: `get_thread` with it works, and the web app shows its threads and media |
+| after 100 hours | gone | rejected with `unknown_recipient` | gone: the node, every thread it took part in, their messages, edges and media files, and any mute or pause naming it |
+
+A reconnect at any point before the purge, with the same session ID (for example after `--resume`) or by registering the same name from the same machine, resumes the same node with its history, and normal delivery starts again. A session that comes back after the purge starts as a new node with no history.
+
+The 100 hours count from the session's last activity, not from when the broker noticed it was gone. To keep stale sessions longer, raise `staleRetentionMs`; retentions longer than a Node timer allows (about 24.8 days) are timed in steps, so they never fire early. A broker restart clears stale sessions along with everything else.
+
 ## Broker restart
 
-Everything the broker holds is in memory, by design: a restart loses the registry, every thread and its history, edge weights, controls and all media. The config file, and so both tokens, survive.
+Everything the broker holds is in memory, by design: a restart loses the registry (including stale sessions kept for inspection), every thread and its history, edge weights, controls and all media. The config file, and so both tokens, survive.
 
 What happens on restart, with nothing for you to do:
 
-- **Shims** reconnect with backoff (1 s growing to 30 s, with jitter), resend `hello` and their last `register`, and reappear in the graph under the same session IDs and names. Messages that were queued for disconnected sessions are gone.
+- **Shims** reconnect with backoff (1 s growing to 30 s, with jitter), resend `hello` and their last `register`, and reappear in the graph under the same session IDs and names. Messages that were queued for disconnected sessions are gone, and sessions that were already down at the restart do not reappear until they reconnect.
 - **The web app** reconnects, is refused with close code 4401 because its login session died with the broker, and shows the login page. Log in again with the Owner token.
 - **Media references** in old messages no longer resolve; downloads answer `404 not_found`.
 
@@ -150,8 +167,8 @@ A rejected `send_message` returns the code and a plain explanation. The codes ar
 
 | Code | Meaning |
 |---|---|
-| `unknown_recipient` | no session with that name or ID; check `list_peers` |
-| `recipient_gone` | the recipient was disconnected for longer than 10 minutes and was removed |
+| `unknown_recipient` | no session with that name or ID, including one purged 100 hours after it was last seen; check `list_peers` |
+| `recipient_gone` | the recipient has been disconnected for more than 10 minutes, so nothing is queued for it. Its history is still readable with `get_thread`, and it stays in the graph until 100 hours after it was last seen (see [Stale sessions](#stale-sessions)) |
 | `too_large` | body over 16 KB, or an attachment over its limit |
 | `rate_limited` | over 30 messages per minute to one recipient; stop and continue local work |
 | `muted`, `paused` | the Owner muted the thread or paused traffic; Owner messages are never blocked |
@@ -166,7 +183,7 @@ Every broker HTTP error has the body `{"error": <code>, "detail"?: <text>}`.
 |---|---|---|
 | 400 | `invalid` | malformed login body; upload missing `file` or `caption`, empty caption, or two files |
 | 401 | `unauthorized` | wrong Owner token at login; missing or wrong shim token, upload key or Owner cookie on `/api/media` |
-| 404 | `not_found` | media expired (45 minutes by default), never existed, or belongs to a thread the requesting session is not in |
+| 404 | `not_found` | media expired (45 minutes by default), was purged with a stale session's threads, never existed, or belongs to a thread the requesting session is not in |
 | 413 | `too_large` | file over 200 MB or caption over 2 KB (defaults) |
 | 415 | `invalid` | the file's content does not match its declared type |
 | 429 | `rate_limited` | over 30 uploads per minute from one session, or too many failed logins from one address |
@@ -183,6 +200,8 @@ HTML, SVG and other non-media files are served as downloads, never displayed in 
 | A session never switches to push | it was not launched with the channel flag, or it runs headless (`claude -p`), where channel events are not surfaced; relaunch interactively with `orchvis-claude` |
 | The broker will not start: port in use | another broker or program holds the port; `pnpm start -- --status` reports whether a broker answers there |
 | A session shows up twice, or under an unexpected ID | the shim takes identity only from `CLAUDE_CODE_SESSION_ID` plus the hostname; a resumed session keeps its ID even from another directory. Ignore other `CLAUDE_*` variables, which can be inherited from a parent process. |
+| A session that ended long ago is still in the graph | expected for 100 hours after it was last seen, so a session that died over a weekend can still be inspected; see [Stale sessions](#stale-sessions) |
+| A session gets a `-2` suffix on a name it asked for | a disconnected session on another machine still holds that name until it reconnects or is purged; the same name from the same machine takes the old node over instead |
 | Repo grouping looks wrong | sessions are grouped by normalized git remote of the repo containing the launch directory; a directory with no remote groups under `local:<host>:<dir>` |
 | Tests crash with exit code 0xC0000409 on Windows | a package is running Vitest in the fork pool; every package's `vitest.config.ts` must spread `sharedTest` from `vitest.shared.ts`, and `vitest.setup.ts` fails runs that do not |
 
