@@ -275,7 +275,8 @@ export class SimShim extends EventEmitter {
     return Math.max(0, Math.round(base * (1 + this.rng.range(-jitter, jitter))));
   }
 
-  private scheduleReconnect(delay: number): void {
+  private scheduleReconnect(delayMs: number): void {
+    const delay = Math.round(delayMs);
     this.stats.reconnectsScheduled++;
     this.emit('reconnecting', delay);
     this.log(`reconnecting in ${delay} ms`);
