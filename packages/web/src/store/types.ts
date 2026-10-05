@@ -64,6 +64,12 @@ export interface FeedData {
   messageThread: Readonly<Record<string, string>>;
   /** Unexpired media by media ID. */
   media: Readonly<Record<string, MediaIndexEntry>>;
+  /**
+   * Media IDs known to have expired: attachments of buffered messages that a
+   * snapshot did not list as media, plus every `media {op:'expire'}` since.
+   * Overlays render these as tombstones.
+   */
+  expiredMedia: Readonly<Record<string, true>>;
   /** Controls in force. */
   control: ControlState;
   /** Media store usage. */

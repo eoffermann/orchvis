@@ -1,36 +1,52 @@
+import { useMemo } from 'react';
 import type { FeedClient } from '../net/feedClient';
+import { uploadMedia } from '../net/media';
+import { MediaBrowser } from '../overlays/MediaBrowser';
+import { NodeChatOverlay } from '../overlays/NodeChatOverlay';
+import type { OverlayActions } from '../overlays/sendFlow';
+import { ThreadOverlay } from '../overlays/ThreadOverlay';
 import { useAppState, useStoreInstance } from '../store/useStore';
 
 /** Props for {@link OverlayHost}. */
 export interface OverlayHostProps {
   /** The feed client, for overlays that send `owner_send` or `control` frames. */
-  client: FeedClient;
+  client: Pick<FeedClient, 'sendOwnerMessage' | 'sendControl'>;
+  /** Overrides the actions built from `client`, for tests. */
+  actions?: OverlayActions;
+}
+
+/** The {@link OverlayActions} of a feed client plus the real media upload. */
+export function clientActions(client: OverlayHostProps['client']): OverlayActions {
+  return {
+    sendOwnerMessage: (payload) => client.sendOwnerMessage(payload),
+    sendControl: (action) => client.sendControl(action),
+    uploadMedia: (file, filename, caption) => uploadMedia(file, filename, caption),
+  };
 }
 
 /**
- * Mount point for the WP6 overlays (node chat, thread, media browser). WP5
- * only shows what is selected; WP6 replaces the body of this component and
- * opens the overlay matching `view.selection`.
+ * Opens the overlay matching `view.selection`: node chat for a node, the
+ * thread overlay for an edge, the media browser for an edge media icon.
  */
-export function OverlayHost(_props: OverlayHostProps) {
+export function OverlayHost({ client, actions }: OverlayHostProps) {
   const store = useStoreInstance();
   const selection = useAppState((s) => s.view.selection);
-  const nodes = useAppState((s) => s.data.nodes);
+  const resolved = useMemo(() => actions ?? clientActions(client), [actions, client]);
   if (!selection) return null;
-  let label: string;
-  if (selection.kind === 'node') {
-    label = `Session ${nodes[selection.id]?.name ?? selection.id}`;
-  } else {
-    const [a, b] = selection.threadId.split('|');
-    const names = [a, b].map((id) => (id && nodes[id]?.name) ?? id ?? '?').join(' and ');
-    label = selection.kind === 'edge' ? `Thread between ${names}` : `${selection.mediaKind} media between ${names}`;
+  const close = () => store.dispatch({ type: 'select', selection: null });
+  switch (selection.kind) {
+    case 'node':
+      return <NodeChatOverlay key={selection.id} sessionId={selection.id} actions={resolved} onClose={close} />;
+    case 'edge':
+      return <ThreadOverlay key={selection.threadId} threadId={selection.threadId} actions={resolved} onClose={close} />;
+    case 'media':
+      return (
+        <MediaBrowser
+          key={`${selection.threadId}/${selection.mediaKind}`}
+          threadId={selection.threadId}
+          kind={selection.mediaKind}
+          onClose={close}
+        />
+      );
   }
-  return (
-    <aside className="selection-chip" aria-live="polite">
-      <span>{label}</span>
-      <button type="button" className="button" onClick={() => store.dispatch({ type: 'select', selection: null })}>
-        Close
-      </button>
-    </aside>
-  );
 }

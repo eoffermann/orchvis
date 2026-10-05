@@ -415,26 +415,620 @@ body,
   pointer-events: none;
 }
 
-/* ---- Selection seam (WP6 replaces this with overlays) ---- */
+/* ---- Overlays ---- */
 
-.selection-chip {
-  position: absolute;
-  right: 1rem;
-  bottom: 1rem;
+.visually-hidden {
+  position: absolute !important;
+  width: 0.0625rem;
+  height: 0.0625rem;
+  margin: -0.0625rem;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.mono {
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  word-break: break-all;
+}
+
+.overlay-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgb(4 8 12 / 0.55);
+}
+
+.overlay {
+  display: flex;
+  flex-direction: column;
+  width: min(60rem, 100%);
+  max-height: 100%;
+  min-height: 0;
+  background: var(--panel);
+  border: 0.0625rem solid var(--border);
+  border-radius: 1rem;
+  box-shadow: 0 1rem 3rem rgb(0 0 0 / 0.5);
+  overflow: hidden;
+}
+
+.overlay:focus {
+  outline: none;
+}
+
+.overlay--chat {
+  width: min(76rem, 100%);
+  height: min(56rem, 100%);
+}
+
+.overlay--thread {
+  width: min(52rem, 100%);
+  height: min(56rem, 100%);
+}
+
+.overlay--media {
+  width: min(76rem, 100%);
+  height: min(56rem, 100%);
+}
+
+.overlay--viewer {
+  width: min(90rem, 100%);
+  height: 100%;
+  background: #05090d;
+}
+
+.overlay-header {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  max-width: min(32rem, calc(100% - 2rem));
-  padding: 0.5rem 0.5rem 0.5rem 1rem;
-  background: var(--panel);
-  border: 0.0625rem solid var(--border);
-  border-radius: 0.75rem;
+  padding: 0.75rem 0.75rem 0.75rem 1.25rem;
+  border-bottom: 0.0625rem solid var(--border);
+  flex-wrap: wrap;
 }
 
-.selection-chip span {
+.overlay-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 1.25rem;
+  overflow-wrap: anywhere;
+}
+
+.icon-button {
+  padding: 0;
+  font-size: 1.5rem;
+  line-height: 1;
+}
+
+.button--warn {
+  background: var(--warn);
+  border-color: var(--warn);
+  color: #1d1203;
+}
+
+:focus-visible {
+  outline: 0.1875rem solid var(--accent);
+  outline-offset: 0.125rem;
+}
+
+.banner {
+  margin: 0.75rem 1rem 0;
+  padding: 0.75rem 1rem;
+  border-radius: 0.5rem;
+  background: rgb(240 160 60 / 0.15);
+  border: 0.0625rem solid var(--warn);
+}
+
+.banner--muted {
+  background: var(--panel-2);
+  border-color: var(--border);
+}
+
+/* Node chat */
+
+.node-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.5rem;
+  margin: 0;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 0.0625rem solid var(--border);
+}
+
+.node-meta div {
+  min-width: 0;
+}
+
+.node-meta dt {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.node-meta dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.status--working {
+  color: var(--ok);
+}
+
+.status--blocked {
+  color: var(--danger);
+}
+
+.status--disconnected {
+  color: var(--muted);
+}
+
+.chat-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.chat-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.chat-side {
+  width: 16rem;
+  flex: none;
+  overflow-y: auto;
+  padding: 0.75rem;
+  border-left: 0.0625rem solid var(--border);
+}
+
+.side-title {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.side-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.side-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0.4rem 0.75rem;
+  border-radius: 0.5rem;
+  border: 0.0625rem solid transparent;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.side-item:hover {
+  background: var(--panel-2);
+  border-color: var(--border);
+}
+
+.side-item-name {
+  overflow-wrap: anywhere;
+}
+
+.side-item-meta {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+@media (max-width: 48rem) {
+  .chat-body {
+    flex-direction: column;
+  }
+
+  .chat-side {
+    width: auto;
+    max-height: 12rem;
+    border-left: 0;
+    border-top: 0.0625rem solid var(--border);
+  }
+}
+
+/* Message list */
+
+.msg-list-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.msg-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.75rem 1rem;
+  touch-action: pan-y;
+}
+
+.msg-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.msg-empty {
+  color: var(--muted);
+  padding: 1rem;
+}
+
+.msg {
+  padding: 0.6rem 0.8rem;
+  border-radius: 0.6rem;
+  background: var(--panel-2);
+  border: 0.0625rem solid var(--border);
+}
+
+.msg--owner {
+  border-color: var(--accent);
+}
+
+.msg--system {
+  border-style: dashed;
+}
+
+.msg-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+  align-items: baseline;
+  font-size: 0.85rem;
+}
+
+.msg-from {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.msg-time,
+.msg-seen {
+  color: var(--muted);
+}
+
+.msg-seen--no {
+  font-style: italic;
+}
+
+.msg-kind {
+  padding: 0 0.4rem;
+  border-radius: 0.25rem;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.msg-kind--request {
+  color: var(--warn);
+}
+
+.msg-body {
+  margin: 0.4rem 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-size: 0.9rem;
+}
+
+.msg-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.attachment {
+  margin: 0;
+  max-width: 100%;
+}
+
+.attachment figcaption {
+  margin-top: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.thumb-button {
+  display: block;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  padding: 0;
+  border: 0.0625rem solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--bg);
+  cursor: zoom-in;
+  overflow: hidden;
+}
+
+.thumb {
+  display: block;
+  max-width: 12rem;
+  max-height: 9rem;
+  object-fit: cover;
+}
+
+.attachment-video {
+  max-width: min(24rem, 100%);
+  max-height: 14rem;
+}
+
+.download-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  max-width: 100%;
+  padding: 0 0.9rem;
+  border-radius: 1.375rem;
+  border: 0.0625rem solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.download-chip-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.download-chip-size {
+  color: var(--muted);
+  font-size: 0.8rem;
+  flex: none;
+}
+
+.tombstone {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.5rem 0.8rem;
+  border-radius: 0.5rem;
+  border: 0.0625rem dashed var(--border);
+  color: var(--muted);
+}
+
+.tombstone-kind {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.tombstone-caption {
+  overflow-wrap: anywhere;
+}
+
+.jump-latest {
+  position: absolute;
+  right: 1.25rem;
+  bottom: 0.75rem;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #06121f;
+  box-shadow: 0 0.25rem 1rem rgb(0 0 0 / 0.4);
+}
+
+/* Composer */
+
+.composer {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-top: 0.0625rem solid var(--border);
+}
+
+.composer-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.composer-input {
+  flex: 1;
+  min-height: 2.75rem;
+  max-height: 12rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: 0.5rem;
+  border: 0.0625rem solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+}
+
+.text-input,
+.select {
+  min-height: 2.75rem;
+  padding: 0 0.75rem;
+  border-radius: 0.5rem;
+  border: 0.0625rem solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.composer-attachments {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.composer-attachment {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.composer-attachment-name {
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-attachment .text-input {
+  flex: 1;
+  min-width: 12rem;
+}
+
+.text-input[aria-invalid='true'] {
+  border-color: var(--warn);
+}
+
+.composer-error {
+  margin: 0;
+  color: var(--danger);
+}
+
+/* Media browser */
+
+.media-grid {
+  list-style: none;
+  margin: 0;
+  padding: 1rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
+  gap: 1rem;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.media-card {
+  display: flex;
+  flex-direction: column;
+  border-radius: 0.75rem;
+  border: 0.0625rem solid var(--border);
+  background: var(--panel-2);
+  overflow: hidden;
+}
+
+.media-card-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 9rem;
+  min-height: 2.75rem;
+  padding: 0;
+  border: 0;
+  background: var(--bg);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.media-card-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.media-card-icon {
+  font-size: 2.5rem;
+}
+
+.media-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.5rem 0.75rem 0.75rem;
+  min-width: 0;
+}
+
+.media-card-caption {
+  overflow-wrap: anywhere;
+}
+
+.media-card-meta {
+  color: var(--muted);
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-card-expiry {
+  color: var(--warn);
+  font-size: 0.8rem;
+}
+
+/* Viewer (lightbox) */
+
+.viewer-stage {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  touch-action: pan-y;
+  user-select: none;
+}
+
+.viewer-image,
+.viewer-video {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.viewer-footer {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-top: 0.0625rem solid var(--border);
+}
+
+.viewer-caption {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.viewer-meta {
+  color: var(--muted);
+  font-size: 0.85rem;
 }
 
 /* ---- Login ---- */

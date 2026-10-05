@@ -2,6 +2,7 @@ import {
   DEFAULT_LIMITS,
   type BrokerToUiFrame,
   type FrameOf,
+  type MediaIndexEntry,
   type MediaStoreUsage,
 } from '@orchvis/protocol';
 import type { AppState, ConnectionStatus, FeedData, Filters, Selection, StoreMessage } from './types';
@@ -33,6 +34,7 @@ export function emptyFeedData(): FeedData {
     messages: {},
     messageThread: {},
     media: {},
+    expiredMedia: {},
     control: { mutedThreads: [], pausedSessions: [], pausedAll: false },
     mediaStore: EMPTY_MEDIA_STORE,
     lastRejection: null,
@@ -124,6 +126,13 @@ function applySnapshot(state: AppState, frame: FrameOf<BrokerToUiFrame, 'snapsho
       messages[threadId] = list;
     }
   }
+  const media: Record<string, MediaIndexEntry> = Object.fromEntries(p.media.map((m) => [m.ref.mediaId, m]));
+  // The snapshot lists every unexpired item, so any attachment it leaves out
+  // has expired.
+  const expiredMedia: Record<string, true> = {};
+  for (const list of Object.values(messages)) {
+    for (const m of list) for (const a of m.attachments) if (!(a.mediaId in media)) expiredMedia[a.mediaId] = true;
+  }
   const data: FeedData = {
     brokerVersion: p.brokerVersion,
     limits: p.limits,
@@ -131,7 +140,8 @@ function applySnapshot(state: AppState, frame: FrameOf<BrokerToUiFrame, 'snapsho
     edges: Object.fromEntries(p.edges.map((e) => [e.threadId, e])),
     messages,
     messageThread,
-    media: Object.fromEntries(p.media.map((m) => [m.ref.mediaId, m])),
+    media,
+    expiredMedia,
     control: p.control,
     mediaStore: p.mediaStore,
     lastRejection: null,
@@ -223,8 +233,13 @@ function applyMedia(state: AppState, frame: FrameOf<BrokerToUiFrame, 'media'>): 
   const p = frame.payload;
   const edges = { ...state.data.edges, [p.edge.threadId]: p.edge };
   const media = { ...state.data.media };
-  if (p.op === 'add') media[p.entry.ref.mediaId] = p.entry;
-  else delete media[p.mediaId];
-  const next = withData(state, { media, edges, mediaStore: p.mediaStore });
+  let expiredMedia = state.data.expiredMedia;
+  if (p.op === 'add') {
+    media[p.entry.ref.mediaId] = p.entry;
+  } else {
+    delete media[p.mediaId];
+    expiredMedia = { ...expiredMedia, [p.mediaId]: true };
+  }
+  const next = withData(state, { media, expiredMedia, edges, mediaStore: p.mediaStore });
   return pruneView(next);
 }
