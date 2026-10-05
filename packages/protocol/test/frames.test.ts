@@ -253,6 +253,8 @@ describe('model', () => {
     expect(DEFAULT_LIMITS.maxBodyBytes).toBe(16384);
     expect(DEFAULT_LIMITS.ringBufferPerThread).toBe(500);
     expect(DEFAULT_LIMITS.mediaTtlMs).toBe(45 * 60_000);
+    expect(DEFAULT_LIMITS.staleRetentionMs).toBe(100 * 60 * 60_000);
+    expect(DEFAULT_LIMITS.staleRetentionMs).toBeGreaterThan(DEFAULT_LIMITS.offlineRetentionMs);
     expect(DEFAULT_LIMITS.sendRatePerMinute).toBe(30);
   });
 });

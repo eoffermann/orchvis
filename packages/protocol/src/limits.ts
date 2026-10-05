@@ -33,11 +33,20 @@ export const LimitsSchema = z.object({
   /** Silence after which a node is marked disconnected, in milliseconds. */
   disconnectAfterMs: z.number().int().positive(),
   /**
-   * How long after disconnect the broker queues messages for a node and keeps
-   * it in the registry, in milliseconds. After that, sends to it are rejected
-   * with `recipient_gone` and the node is removed.
+   * How long after disconnect the broker queues messages for a node, in
+   * milliseconds. After that the queue is dropped and sends to the node are
+   * rejected with `recipient_gone`, but the node stays in the registry,
+   * disconnected, until {@link staleRetentionMs}.
    */
   offlineRetentionMs: z.number().int().positive(),
+  /**
+   * How long after it was last seen a disconnected node stays inspectable, in
+   * milliseconds: it stays in the graph and its threads, history and media stay
+   * readable. Long enough to survive a long weekend. A reconnect within this
+   * window resumes the same node. After it, the broker purges the node and
+   * every thread it took part in (see the `node` remove delta).
+   */
+  staleRetentionMs: z.number().int().positive(),
   /** Time a shim waits for `confirm_channel` before falling back to poll mode. */
   channelProbeTimeoutMs: z.number().int().positive(),
 });
@@ -58,6 +67,7 @@ export const DEFAULT_LIMITS: Readonly<Limits> = Object.freeze({
   heartbeatIntervalMs: 15_000,
   disconnectAfterMs: 45_000,
   offlineRetentionMs: 10 * 60_000,
+  staleRetentionMs: 100 * 60 * 60_000,
   channelProbeTimeoutMs: 60_000,
 });
 

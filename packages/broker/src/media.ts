@@ -116,6 +116,11 @@ export class MediaStore {
     return entry;
   }
 
+  /** Every entry, attached or not, in upload order. */
+  all(): StoredMedia[] {
+    return [...this.entries.values()];
+  }
+
   /** Entries whose TTL has run out at `now`, oldest first. */
   expiredAt(now: number): StoredMedia[] {
     return [...this.entries.values()].filter((e) => e.ref.expiresAt <= now);

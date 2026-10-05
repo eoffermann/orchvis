@@ -39,6 +39,11 @@ export class RollingRateLimiter {
     for (const key of [...this.events.keys()]) this.prune(key, now);
   }
 
+  /** Forgets every key for which `match` returns true, with its events. */
+  deleteWhere(match: (key: string) => boolean): void {
+    for (const key of [...this.events.keys()]) if (match(key)) this.events.delete(key);
+  }
+
   /** Number of keys currently tracked. */
   get size(): number {
     return this.events.size;

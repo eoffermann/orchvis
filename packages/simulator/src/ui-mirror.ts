@@ -69,7 +69,7 @@ export class UiStateMirror {
       }
       case 'node':
         if (frame.payload.op === 'upsert') this.nodes.set(frame.payload.node.id, structuredClone(frame.payload.node));
-        else this.nodes.delete(frame.payload.id);
+        else this.purgeNode(frame.payload.id);
         break;
       case 'message':
         this.addMessage(structuredClone(frame.payload.message));
@@ -91,6 +91,35 @@ export class UiStateMirror {
         this.control = structuredClone(frame.payload);
         break;
     }
+  }
+
+  /**
+   * A `node` remove is a purge: drops the node, every thread it took part in
+   * (edge, messages, media index entries), and every control naming it or
+   * those threads. Media dropped here also leaves the store usage. The broker
+   * announces each attached item with a `media` expire before the remove, so
+   * normally there is none left by now; subtracting keeps the state right
+   * either way.
+   */
+  private purgeNode(id: string): void {
+    this.nodes.delete(id);
+    const involves = (threadId: string) => threadId.split('|').includes(id);
+    for (const t of new Set([...this.threads.keys(), ...this.edges.keys()])) {
+      if (!involves(t)) continue;
+      for (const m of this.threads.get(t) ?? []) this.byId.delete(m.id);
+      this.threads.delete(t);
+      this.edges.delete(t);
+    }
+    for (const [mediaId, entry] of this.media) {
+      if (!involves(entry.threadId)) continue;
+      this.media.delete(mediaId);
+      this.mediaStore = { ...this.mediaStore, bytes: this.mediaStore.bytes - entry.ref.bytes, files: this.mediaStore.files - 1 };
+    }
+    this.control = {
+      mutedThreads: this.control.mutedThreads.filter((t) => !involves(t)),
+      pausedSessions: this.control.pausedSessions.filter((s) => s !== id),
+      pausedAll: this.control.pausedAll,
+    };
   }
 
   private addMessage(m: Message): void {

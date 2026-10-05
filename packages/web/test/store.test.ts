@@ -62,6 +62,50 @@ describe('reducer: snapshot then deltas', () => {
     expect(state.data.control.mutedThreads).toEqual([e1.threadId]);
   });
 
+  it('node remove purges the node and its threads, so state equals a fresh snapshot without them', () => {
+    const mk = frames();
+    const ab = message(A, B, T0 - 300);
+    const ac = message(A, C, T0 - 200);
+    const acMedia = message(C, A, T0 - 100);
+    const entry = { ...mediaEntry(acMedia, 'mc'), messageId: acMedia.id };
+    const acWithAttachment = { ...acMedia, attachments: [entry.ref] };
+    const eAB = edge(A, B, 1);
+    const eAC = edge(A, C, 2, { media: { image: 1, audio: 0, video: 0, other: 0 } });
+    const control = { mutedThreads: [eAC.threadId, eAB.threadId], pausedSessions: [C, B], pausedAll: false };
+    const usage = { bytes: 10, capBytes: 100, files: 1 };
+
+    const purged = run([
+      open,
+      frame(
+        snapshotFrame(mk, {
+          nodes: [node(A), node(B), node(C)],
+          edges: [eAB, eAC],
+          messages: [ab, ac, acWithAttachment],
+          media: [entry],
+          control,
+          mediaStore: usage,
+        }),
+      ),
+      { type: 'select', selection: { kind: 'edge', threadId: eAC.threadId } },
+      frame(mk('node', { op: 'remove', id: C })),
+    ]);
+
+    const fresh = run([
+      open,
+      frame(
+        snapshotFrame(frames(), {
+          nodes: [node(A), node(B)],
+          edges: [eAB],
+          messages: [ab],
+          control: { mutedThreads: [eAB.threadId], pausedSessions: [B], pausedAll: false },
+          mediaStore: usage,
+        }),
+      ),
+    ]);
+    expect(purged.data).toEqual(fresh.data);
+    expect(purged.view.selection).toBeNull();
+  });
+
   it('removes expired media and updates the edge counts', () => {
     const mk = frames();
     const m = message(A, B);

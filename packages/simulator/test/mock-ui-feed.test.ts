@@ -36,7 +36,8 @@ describe('mock /ws/ui feed', () => {
       clock,
       nodes: 30,
       seed: 1,
-      limits: { mediaTtlMs: 5 * MIN, mediaStoreBytes: 200_000 },
+      // A short stale retention, so retired sessions are purged (node remove) within the run.
+      limits: { mediaTtlMs: 5 * MIN, mediaStoreBytes: 200_000, staleRetentionMs: 12 * MIN },
       traffic: { mediaRate: 0.15, disconnectMeanMs: 8 * MIN },
       churnRate: 0.6,
       onProblem: (p) => {

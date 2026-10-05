@@ -14,6 +14,9 @@ async function pair(config: Parameters<typeof harness>[0] = {}) {
 /** Heartbeat slow enough that large clock jumps do not disconnect the test shims. */
 const NO_HEARTBEAT = { heartbeatIntervalMs: 3_600_000, disconnectAfterMs: 7_200_000 };
 
+/** Heartbeat slow enough that a jump past staleRetentionMs (100 h) does not disconnect the test shims. */
+const NO_HEARTBEAT_LONG = { heartbeatIntervalMs: 200 * 3_600_000, disconnectAfterMs: 400 * 3_600_000 };
+
 function code(frame: { type: string; payload: unknown }): RejectCode | 'sent' {
   return frame.type === 'sent' ? 'sent' : (frame.payload as { code: RejectCode }).code;
 }
@@ -182,19 +185,29 @@ describe('rejection codes', () => {
     expect(code(await a.sendMessage('BETA', 'x'))).toBe('sent');
   });
 
-  it('recipient_gone after offline retention, for shims and the owner', async () => {
-    const { h, a, b } = await pair({ limits: NO_HEARTBEAT });
+  it('recipient_gone after offline retention, for shims and the owner; unknown_recipient once purged', async () => {
+    const { h, a, b } = await pair({ limits: NO_HEARTBEAT_LONG });
     const { ui } = await h.ui();
     await b.close();
     await ui.next('node', (f) => f.payload.op === 'upsert' && !f.payload.node.connected);
     expect(code(await a.sendMessage('BETA', 'queued'))).toBe('sent');
     h.clock.advance(DEFAULT_LIMITS.offlineRetentionMs);
-    await ui.next('node', (f) => f.payload.op === 'remove' && f.payload.id === 'host:b');
-    expect((await a.next('peers', (f) => f.payload.peers.length === 0)).payload.peers).toEqual([]);
     expect(code(await a.sendMessage('BETA', 'x'))).toBe('recipient_gone');
     expect(code(await a.sendMessage('host:b', 'x'))).toBe('recipient_gone');
-    const re = ui.send('owner_send', { to: 'host:b', kind: 'chat', body: 'x', attachments: [] });
+    let re = ui.send('owner_send', { to: 'host:b', kind: 'chat', body: 'x', attachments: [] });
     expect((await ui.next('rejected', (f) => f.payload.re === re)).payload.code).toBe('recipient_gone');
+    // The node itself stays: no remove, and it is still a (disconnected) peer.
+    expect(ui.frames.some((f) => f.type === 'node' && f.payload.op === 'remove')).toBe(false);
+    const { snapshot } = await h.ui();
+    expect(snapshot.payload.nodes.find((n) => n.id === 'host:b')).toMatchObject({ connected: false, name: 'BETA' });
+    expect(a.frames.filter((f) => f.type === 'peers').at(-1)?.payload).toMatchObject({ peers: [{ id: 'host:b', connected: false }] });
+
+    h.clock.advance(DEFAULT_LIMITS.staleRetentionMs - DEFAULT_LIMITS.offlineRetentionMs);
+    await ui.next('node', (f) => f.payload.op === 'remove' && f.payload.id === 'host:b');
+    expect(code(await a.sendMessage('BETA', 'x'))).toBe('unknown_recipient');
+    expect(code(await a.sendMessage('host:b', 'x'))).toBe('unknown_recipient');
+    re = ui.send('owner_send', { to: 'host:b', kind: 'chat', body: 'x', attachments: [] });
+    expect((await ui.next('rejected', (f) => f.payload.re === re)).payload.code).toBe('unknown_recipient');
   });
 
   it('invalid: message to self, attachments before media exists, malformed frames', async () => {

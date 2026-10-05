@@ -301,7 +301,16 @@ export const SnapshotFrame = frame(
   }),
 );
 
-/** A node was added or changed, or removed after its offline retention ran out. */
+/**
+ * A node was added or changed, or removed.
+ *
+ * `remove` is a purge: the node, every thread it took part in (the edge, its
+ * buffered messages and their media index entries), and any control naming the
+ * node or those threads are gone. A client drops all of them, so its state
+ * still equals a fresh snapshot. The broker removes a node when it has been
+ * disconnected for `staleRetentionMs`, and when aliasing replaces a just-created
+ * node, which has no threads yet.
+ */
 export const NodeFrame = frame(
   'node',
   z.discriminatedUnion('op', [

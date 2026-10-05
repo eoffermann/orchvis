@@ -109,9 +109,11 @@ describe('cli', () => {
     }
   }, 60_000);
 
-  it('documents --init in --help', async () => {
+  it('documents --init and every limit override in --help', async () => {
     const run = await runCli({}, undefined, ['--help']);
     expect(run.stderr).toContain('--init');
+    expect(run.stderr).toContain('ORCHVIS_OFFLINE_RETENTION_MS');
+    expect(run.stderr).toContain('ORCHVIS_STALE_RETENTION_MS');
   }, 60_000);
 
   it('fails with a clear message when the port is in use', async () => {
