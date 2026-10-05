@@ -1,5 +1,6 @@
 {
   "name": "@orchvis/broker",
+  "license": "MIT",
   "version": "0.1.0",
   "private": true,
   "description": "orchvis broker: session registry, message routing, ring buffers and the live feed for the web app.",

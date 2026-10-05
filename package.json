@@ -1,5 +1,6 @@
 {
   "name": "orchvis",
+  "license": "MIT",
   "private": true,
   "description": "Orchestration Visualizer: a message bus for Claude Code sessions with a live web view.",
   "packageManager": "pnpm@9.15.4",
