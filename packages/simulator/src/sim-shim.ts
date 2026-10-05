@@ -77,6 +77,12 @@ export interface SimShimOptions {
   heartbeat?: boolean;
   /** Frames kept for {@link SimShim.next}; the oldest are dropped beyond this. Default 1000. */
   bufferLimit?: number;
+  /**
+   * Delivered message IDs remembered for deduplication; the oldest are
+   * forgotten beyond this. Default 20000. Long runs that measure memory set it
+   * low, since the set otherwise grows with every delivery until the limit.
+   */
+  deliveredIdLimit?: number;
   /** Reported as `shimVersion`. Default `sim-0.1.0`. */
   shimVersion?: string;
   /** Receives one line per notable event (connect, reconnect, invalid frame). */
@@ -392,7 +398,7 @@ export class SimShim extends EventEmitter {
       return false;
     }
     this.deliveredIds.add(m.id);
-    if (this.deliveredIds.size > 20_000) this.deliveredIds.delete(this.deliveredIds.values().next().value as string);
+    if (this.deliveredIds.size > (this.opts.deliveredIdLimit ?? 20_000)) this.deliveredIds.delete(this.deliveredIds.values().next().value as string);
     this.stats.delivered++;
     if (this.persona === 'push') this.sendSeen([m.id]);
     else this.unseen.set(m.id, m);

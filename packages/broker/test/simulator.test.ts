@@ -1,7 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { UiStateMirror, diffUiStates, startShimFleet } from '@orchvis/simulator';
+import { UiStateMirror, diffUiStates, startShimFleet, type ShimFleet } from '@orchvis/simulator';
 import { FakeUi } from './helpers/fake.js';
-import { startBroker } from '../src/index.js';
+import { startBroker, type RunningBroker } from '../src/index.js';
+
+/**
+ * Stops the fleet and waits until the broker has seen every shim go. Until
+ * then shims still send (poll-persona `seen` batches, heartbeats), so a
+ * snapshot and a live feed synced a moment apart can legitimately differ.
+ */
+async function quiesce(fleet: ShimFleet, broker: RunningBroker): Promise<void> {
+  fleet.close();
+  const deadline = Date.now() + 5_000;
+  while (broker.stats().shimLinks > 0) {
+    if (Date.now() > deadline) throw new Error('shims did not disconnect');
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
 
 describe('broker driven by the WP1 simulator fleet', () => {
   it('routes random fleet traffic with valid frames, and the live feed matches a fresh snapshot', async () => {
@@ -26,6 +40,7 @@ describe('broker driven by the WP1 simulator fleet', () => {
       expect(stats.sendsOk).toBeGreaterThan(10);
       expect(stats.delivered).toBeGreaterThan(5);
 
+      await quiesce(fleet, broker);
       await ui.sync();
       const live = new UiStateMirror();
       for (const f of ui.frames) live.apply(f);
@@ -70,8 +85,9 @@ describe('broker driven by the WP1 simulator fleet', () => {
       expect(rejected.filter((c) => c !== 'rate_limited')).toEqual([]);
       expect(stats.uploadFailures).toBe(rejected.length);
 
-      const { ui: ui2, snapshot } = await FakeUi.connect(broker);
+      await quiesce(fleet, broker);
       await ui.sync();
+      const { ui: ui2, snapshot } = await FakeUi.connect(broker);
       const live = new UiStateMirror();
       for (const f of ui.frames) live.apply(f);
       const fresh = new UiStateMirror();

@@ -87,6 +87,13 @@ export class ThreadStore {
     return [...this.edges.values()].map((e) => ({ ...e, media: { ...e.media } }));
   }
 
+  /** Sizes of the internal structures, for leak checks: threads, buffered messages, the ID index, and edges. */
+  sizes(): { threads: number; buffered: number; indexed: number; edges: number } {
+    let buffered = 0;
+    for (const b of this.buffers.values()) buffered += b.length;
+    return { threads: this.buffers.size, buffered, indexed: this.byId.size, edges: this.edges.size };
+  }
+
   /** Statistics for one thread. */
   edge(threadId: string): EdgeStats | undefined {
     return this.edges.get(threadId);
