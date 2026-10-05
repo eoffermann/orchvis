@@ -227,11 +227,7 @@ function printSummary(opts, address, firstRun) {
     "    shimToken:  other machines enter it in scripts/setup (this machine's sessions are already set up).",
   ];
   if (firstRun) {
-    lines.push(
-      opts.background
-        ? `  First run: the broker also printed both tokens once to ${runFiles().logFile}.`
-        : '  First run: the broker printed both tokens above. Copy them now; they are not shown again.',
-    );
+    lines.push('  First run: that config file was just created. The broker never prints tokens; open the file to read them.');
   }
   if (process.platform === 'win32') {
     lines.push(`  Other machines need an inbound Windows Firewall rule for TCP port ${address.port}.`);
@@ -307,7 +303,19 @@ export async function main(argv = process.argv.slice(2)) {
   const firstRun = !existsSync(configPath);
   const env = { ...process.env };
   if (opts.port) env.ORCHVIS_PORT = String(opts.port);
-  const cmd = brokerCommand(opts.config ? ['--config', opts.config] : []);
+  const configArgs = opts.config ? ['--config', opts.config] : [];
+
+  // Create the config (and its tokens) in the foreground first, so the
+  // background broker's log never has a first-run step to report.
+  log(`${firstRun ? 'creating' : 'checking'} the broker config with --init...`);
+  const init = brokerCommand(['--init', ...configArgs]);
+  const initRun = spawnSync(init.command, init.args, { cwd: init.cwd, env, shell: init.shell, stdio: 'inherit' });
+  if (initRun.status !== 0) {
+    fail(`the broker could not create or read its config (exit ${initRun.status ?? initRun.error?.message}).`);
+    return 1;
+  }
+
+  const cmd = brokerCommand(configArgs);
   const { home, logFile, pidFile } = runFiles();
 
   let child;

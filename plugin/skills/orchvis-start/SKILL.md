@@ -51,8 +51,8 @@ the tokens are stored so they can copy them themselves.
 3. **Report to the user.** Take these from the script's output:
    - the web app URL on this machine and the LAN URL for other machines;
    - that the Owner token for the web app login is stored in
-     `~/.orchvis/orchvis.config.json` (`ownerToken`), and that on the very
-     first run it was also printed once to `~/.orchvis/broker.log`;
+     `~/.orchvis/orchvis.config.json` (`ownerToken`); the broker never prints
+     tokens, so the user opens that file to copy it;
    - that other machines need the shim token (`shimToken` in that same file)
      and should run `scripts/setup` from the orchvis repo with the LAN URL;
    - on Windows, that other machines need an inbound firewall rule for the port.
