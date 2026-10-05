@@ -1,6 +1,8 @@
-import { createHash } from 'node:crypto';
-import { createWriteStream, openAsBlob, rmSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { createReadStream, createWriteStream, rmSync } from 'node:fs';
 import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import { tmpdir } from 'node:os';
 import { basename, extname, isAbsolute, join, resolve } from 'node:path';
 import { Readable, Transform } from 'node:stream';
@@ -199,32 +201,93 @@ export async function validateAttachments(
   return out;
 }
 
+/** A filename safe inside a multipart `Content-Disposition` header. */
+function dispositionFilename(name: string): string {
+  return name.replace(/[\r\n]/g, '').replace(/"/g, '%22');
+}
+
 /**
  * Uploads one file to `POST /api/media` as multipart form data (the caption
  * field first, then the file), streamed from disk. Returns the broker's
  * `MediaRef`.
+ *
+ * It uses node:http, not fetch, and streams the body from a file stream it
+ * owns. The broker can answer (401, 413, ...) before the whole file is sent:
+ * - fetch turns a 401 to a streamed request into a network error (the fetch
+ *   spec's credential-retry rule), hiding the broker's answer;
+ * - a file-backed Blob body keeps being read by the HTTP client after the
+ *   answer, and a late read failure (the file changed or vanished) rejects
+ *   inside the client, where nothing can catch it.
+ * Here, the first response wins: the body stream is stopped, and later socket
+ * or file errors are ignored.
  */
 export async function uploadMedia(
   endpoint: MediaEndpoint,
   file: { absPath: string; caption: string },
 ): Promise<MediaRef> {
   const name = basename(file.absPath);
-  const blob = await openAsBlob(file.absPath, { type: guessMime(name) });
-  const form = new FormData();
-  form.append(MEDIA_CAPTION_FIELD, file.caption);
-  form.append(MEDIA_FILE_FIELD, blob, name);
-  let response: Response;
-  try {
-    response = await fetch(`${endpoint.httpBase}${MEDIA_PATH}`, {
-      method: 'POST',
-      headers: shimAuthHeaders(endpoint),
-      body: form,
-    });
-  } catch (err) {
-    throw new MediaError('upload_failed', `upload to ${endpoint.httpBase}${MEDIA_PATH} failed: ${(err as Error).message}`);
+  const url = new URL(`${endpoint.httpBase}${MEDIA_PATH}`);
+  const boundary = `----orchvis-${randomBytes(12).toString('hex')}`;
+  const head = Buffer.from(
+    `--${boundary}\r\nContent-Disposition: form-data; name="${MEDIA_CAPTION_FIELD}"\r\n\r\n${file.caption}\r\n` +
+      `--${boundary}\r\nContent-Disposition: form-data; name="${MEDIA_FILE_FIELD}"; filename="${dispositionFilename(name)}"\r\n` +
+      `Content-Type: ${guessMime(name)}\r\n\r\n`,
+  );
+  const tail = Buffer.from(`\r\n--${boundary}--\r\n`);
+  let answered = false;
+  async function* parts(): AsyncGenerator<Buffer> {
+    yield head;
+    const source = createReadStream(file.absPath);
+    try {
+      for await (const chunk of source) {
+        if (answered) return;
+        yield chunk as Buffer;
+      }
+    } catch (err) {
+      if (answered) return;
+      throw err;
+    } finally {
+      source.destroy();
+    }
+    if (!answered) yield tail;
   }
-  const text = await response.text();
-  if (!response.ok) throw mediaHttpError('upload', name, response.status, text);
+
+  let status: number;
+  let text: string;
+  try {
+    ({ status, text } = await new Promise<{ status: number; text: string }>((resolveRes, rejectRes) => {
+      const body = Readable.from(parts());
+      const send = url.protocol === 'https:' ? httpsRequest : httpRequest;
+      const req = send(url, {
+        method: 'POST',
+        headers: { ...shimAuthHeaders(endpoint), 'content-type': `multipart/form-data; boundary=${boundary}` },
+      });
+      const failEarly = (err: Error): void => {
+        if (answered) return;
+        answered = true;
+        body.destroy();
+        req.destroy();
+        rejectRes(err);
+      };
+      req.on('error', failEarly);
+      body.on('error', failEarly);
+      req.on('response', (res) => {
+        answered = true;
+        body.unpipe(req);
+        body.destroy();
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => resolveRes({ status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString('utf8') }));
+        res.on('error', rejectRes);
+        res.on('aborted', () => rejectRes(new Error('the broker closed the connection mid-response')));
+      });
+      body.pipe(req);
+    }));
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    throw new MediaError('upload_failed', `upload to ${url.origin}${MEDIA_PATH} failed: ${e.code ?? e.message}`);
+  }
+  if (status < 200 || status >= 300) throw mediaHttpError('upload', name, status, text);
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
