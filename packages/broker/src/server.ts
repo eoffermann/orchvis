@@ -71,7 +71,9 @@ export function authorizeUi(request: IncomingMessage, ownerToken: string): boole
 function wsConn(ws: WebSocket): Conn {
   return {
     send: (text) => {
-      if (ws.readyState === ws.OPEN) ws.send(text);
+      if (ws.readyState !== ws.OPEN) return false;
+      ws.send(text);
+      return true;
     },
     close: (code, reason) => {
       if (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING) ws.close(code, reason);

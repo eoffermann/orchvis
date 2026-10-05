@@ -56,8 +56,11 @@ export const CloseCodes = Object.freeze({
 
 /** A transport connection, as the core sees it: text frames out, and close. */
 export interface Conn {
-  /** Sends one text frame. Must not throw once the connection has closed. */
-  send(text: string): void;
+  /**
+   * Sends one text frame. Returns false, without throwing, when the
+   * connection is closing or closed and the frame was not sent.
+   */
+  send(text: string): boolean;
   /** Closes the connection. */
   close(code: number, reason: string): void;
 }
@@ -646,8 +649,8 @@ export class BrokerCore {
     if (evicted.length) this.logger.log('ring_evicted', { threadId: message.threadId, count: evicted.length });
     if (message.to.kind === 'session') {
       const rec = this.nodes.get(message.to.id);
-      if (rec?.link) this.sendShim(rec.link, 'deliver', { message });
-      else if (rec) rec.queue.push(message);
+      // A socket that is closing drops the frame; queue it so it is not lost to ring eviction.
+      if (rec && !(rec.link && this.sendShim(rec.link, 'deliver', { message }))) rec.queue.push(message);
     }
     this.broadcastUi('message', { message, edge });
   }
@@ -750,9 +753,9 @@ export class BrokerCore {
     link.conn.close(code, reason);
   }
 
-  private sendShim<T extends BrokerToShimFrame['type']>(link: ShimLink, type: T, payload: PayloadOf<BrokerToShimFrame, T>): void {
-    if (link.closed) return;
-    link.conn.send(encodeFrame(link.mk(type, payload)));
+  private sendShim<T extends BrokerToShimFrame['type']>(link: ShimLink, type: T, payload: PayloadOf<BrokerToShimFrame, T>): boolean {
+    if (link.closed) return false;
+    return link.conn.send(encodeFrame(link.mk(type, payload)));
   }
 
   private sendUi<T extends BrokerToUiFrame['type']>(link: UiLink, type: T, payload: PayloadOf<BrokerToUiFrame, T>): void {
