@@ -7,6 +7,8 @@ import {
   LOGIN_PATH,
   LOGOUT_PATH,
   LoginRequestSchema,
+  MEDIA_CAPTION_FIELD,
+  MEDIA_FILE_FIELD,
   MEDIA_PATH,
   OWNER_COOKIE,
   SHIM_TOKEN_HEADER,
@@ -18,6 +20,7 @@ import {
   decodeFrame,
   encodeFrame,
   type BrokerToUiFrame,
+  type HttpError,
   type Limits,
 } from '@orchvis/protocol';
 import { WebSocketServer, type WebSocket } from 'ws';
@@ -143,6 +146,11 @@ export async function startMockUiFeed(options: MockUiFeedOptions = {}): Promise<
     res.end(JSON.stringify(body));
   }
 
+  function httpError(res: ServerResponse, status: number, error: HttpError['error'], detail?: string): void {
+    const body: HttpError = detail === undefined ? { error } : { error, detail };
+    json(res, status, body);
+  }
+
   const server = createServer((req, res) => {
     handleHttp(req, res).catch((err: unknown) => {
       problem(`http error: ${err instanceof Error ? err.message : String(err)}`);
@@ -213,22 +221,26 @@ export async function startMockUiFeed(options: MockUiFeedOptions = {}): Promise<
       res.writeHead(204, { 'set-cookie': `${OWNER_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` }).end();
       return;
     }
+    const isMedia = url.pathname === MEDIA_PATH || url.pathname.startsWith(`${MEDIA_PATH}/`);
+    if (isMedia && options.ownerToken !== undefined && ownerSessionOf(req) === undefined) {
+      httpError(res, 401, 'unauthorized');
+      return;
+    }
     if (req.method === 'POST' && url.pathname === MEDIA_PATH) {
       const body = await readBody(req, world.limits.maxMediaBytes + 64 * 1024);
       if (!body) {
-        res.writeHead(413).end();
+        httpError(res, 413, 'too_large');
         return;
       }
       const form = await new Request('http://mock/api/media', {
         method: 'POST',
         headers: { 'content-type': req.headers['content-type'] ?? '' },
-        body,
+        body: new Uint8Array(body),
       }).formData();
-      const file = form.get('file');
-      const caption = form.get('caption');
+      const file = form.get(MEDIA_FILE_FIELD);
+      const caption = form.get(MEDIA_CAPTION_FIELD);
       if (!(file instanceof Blob) || typeof caption !== 'string' || caption.trim() === '') {
-        res.writeHead(400, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: 'multipart fields file and caption are required' }));
+        httpError(res, 400, 'invalid', 'multipart fields file and caption are required');
         return;
       }
       const data = new Uint8Array(await file.arrayBuffer());
@@ -244,7 +256,7 @@ export async function startMockUiFeed(options: MockUiFeedOptions = {}): Promise<
     if (req.method === 'GET' && mediaMatch) {
       const item = world.mediaData(decodeURIComponent(mediaMatch[1] as string));
       if (!item) {
-        res.writeHead(404).end();
+        httpError(res, 404, 'not_found');
         return;
       }
       const headers: Record<string, string> = {
@@ -272,7 +284,7 @@ export async function startMockUiFeed(options: MockUiFeedOptions = {}): Promise<
       res.end(Buffer.from(item.data));
       return;
     }
-    res.writeHead(404).end();
+    httpError(res, 404, 'not_found');
   }
 
   const wss = new WebSocketServer({ noServer: true });

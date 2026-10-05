@@ -1,4 +1,4 @@
-import { LOGIN_PATH, LOGOUT_PATH, OWNER_COOKIE, WS_CLOSE } from '@orchvis/protocol';
+import { HttpErrorSchema, LOGIN_PATH, LOGOUT_PATH, MEDIA_PATH, MediaRefSchema, OWNER_COOKIE, WS_CLOSE } from '@orchvis/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 import { startMockUiFeed, type MockUiFeed } from '../src/index.js';
@@ -72,6 +72,36 @@ describe('mock feed login, matching the broker contract', () => {
     expect(out.status).toBe(204);
     expect(out.headers.get('set-cookie')).toContain('Max-Age=0');
     expect(await firstEvent(cookie)).toEqual({ close: WS_CLOSE.unauthorized });
+  });
+
+  it('guards media with the Owner cookie and answers errors in HttpErrorSchema form', async () => {
+    feed = await startMockUiFeed({ port: 0, nodes: 3, ownerToken: 'right', startTraffic: false });
+    const base = `${feed.httpUrl}${MEDIA_PATH}`;
+    const upload = (cookie?: string, withCaption = true) => {
+      const form = new FormData();
+      form.append('file', new Blob([new Uint8Array([1, 2, 3])], { type: 'application/octet-stream' }), 'x.bin');
+      if (withCaption) form.append('caption', 'three bytes');
+      return fetch(base, { method: 'POST', body: form, ...(cookie ? { headers: { cookie } } : {}) });
+    };
+    const expectError = async (res: Response, status: number, error: string) => {
+      expect(res.status).toBe(status);
+      const body = HttpErrorSchema.parse(await res.json());
+      expect(body.error).toBe(error);
+    };
+
+    await expectError(await upload(), 401, 'unauthorized');
+    await expectError(await fetch(`${base}/anything`), 401, 'unauthorized');
+
+    const cookie = cookieFrom(await login('right'));
+    await expectError(await upload(cookie, false), 400, 'invalid');
+    await expectError(await fetch(`${base}/missing`, { headers: { cookie } }), 404, 'not_found');
+
+    const ok = await upload(cookie);
+    expect(ok.status).toBe(201);
+    const ref = MediaRefSchema.parse(await ok.json());
+    const got = await fetch(`${base}/${ref.mediaId}`, { headers: { cookie } });
+    expect(got.status).toBe(200);
+    expect(new Uint8Array(await got.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
   });
 
   it('is open when no owner token is configured', async () => {
