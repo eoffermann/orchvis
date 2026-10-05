@@ -1,4 +1,50 @@
 import { z } from 'zod';
+import { RejectCodeSchema } from './errors.js';
+import { MediaRefSchema } from './model.js';
+
+/**
+ * Error body of every broker HTTP endpoint: a rejection code, or `not_found`
+ * for an unknown or expired media ID, plus an optional human-readable detail.
+ */
+export const HttpErrorSchema = z.object({
+  error: z.union([RejectCodeSchema, z.literal('not_found')]),
+  detail: z.string().max(1024).optional(),
+});
+
+/** Error body of every broker HTTP endpoint. */
+export type HttpError = z.infer<typeof HttpErrorSchema>;
+
+/** Multipart field carrying the uploaded file in `POST /api/media`. */
+export const MEDIA_FILE_FIELD = 'file';
+
+/** Multipart field carrying the required caption in `POST /api/media`. */
+export const MEDIA_CAPTION_FIELD = 'caption';
+
+/**
+ * Success body of `POST /api/media`: the stored {@link MediaRefSchema}, sent
+ * with status `201`.
+ *
+ * The request is `multipart/form-data` with one {@link MEDIA_FILE_FIELD} part
+ * (its filename and declared content type are used) and one
+ * {@link MEDIA_CAPTION_FIELD} text field, in either order. A shim
+ * authenticates with the {@link SHIM_TOKEN_HEADER} header, the Owner with the
+ * {@link OWNER_COOKIE}. The broker sniffs the content and sanitizes the caption
+ * and filename. Errors, each with an {@link HttpErrorSchema} body:
+ * - `401 unauthorized`: missing or wrong token or cookie.
+ * - `400 invalid`: missing file or caption, empty caption, or more than one file.
+ * - `413 too_large`: the file is over `maxMediaBytes` or the caption over `maxCaptionBytes`.
+ * - `415 invalid`: the sniffed type does not match the declared type.
+ * - `429 rate_limited`: too many uploads from this connection.
+ *
+ * `GET /api/media/:id` takes the same auth, supports a single `Range`, and
+ * answers `404 not_found` once the item has expired. It serves media with
+ * `X-Content-Type-Options: nosniff`, and HTML, SVG and anything not image,
+ * audio, video or plain text as an attachment download.
+ */
+export const MediaUploadResponseSchema = MediaRefSchema;
+
+/** Success body of `POST /api/media`. */
+export type MediaUploadResponse = z.infer<typeof MediaUploadResponseSchema>;
 
 /** Liveness endpoint. No auth. */
 export const HEALTH_PATH = '/healthz';
