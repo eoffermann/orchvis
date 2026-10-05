@@ -1,4 +1,4 @@
-import { UI_WS_PATH } from '@orchvis/protocol';
+import { UI_WS_PATH, WS_CLOSE } from '@orchvis/protocol';
 
 /** Why a transport closed. */
 export interface CloseInfo {
@@ -32,8 +32,15 @@ export interface Transport {
 /** Opens a new transport that reports to `handlers`. */
 export type TransportFactory = (handlers: TransportHandlers) => Transport;
 
-/** Close codes that mean the Owner cookie was refused. */
-export const UNAUTHORIZED_CLOSE_CODES: ReadonlySet<number> = new Set([1008, 4401, 4403]);
+/**
+ * Whether a `/ws/ui` close means the Owner cookie was refused, so the login
+ * screen should show. Only `WS_CLOSE.unauthorized` (4401) means that; every
+ * other code, including `forbiddenOrigin` (4403), is treated as transient and
+ * retried with backoff, as the protocol prescribes.
+ */
+export function isUnauthorizedClose(code: number): boolean {
+  return code === WS_CLOSE.unauthorized;
+}
 
 /** The `/ws/ui` URL for the page's own origin. */
 export function feedUrl(loc: Pick<Location, 'protocol' | 'host'> = window.location): string {

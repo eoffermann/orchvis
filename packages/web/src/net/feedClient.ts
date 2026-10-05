@@ -9,7 +9,7 @@ import {
 } from '@orchvis/protocol';
 import type { Store } from '../store/store';
 import { backoffDelay } from './backoff';
-import { UNAUTHORIZED_CLOSE_CODES, type Transport, type TransportFactory } from './transport';
+import { isUnauthorizedClose, type Transport, type TransportFactory } from './transport';
 
 /** Options for {@link FeedClient}. */
 export interface FeedClientOptions {
@@ -126,10 +126,11 @@ export class FeedClient {
         if (id !== this.connectionCount) return;
         this.transport = null;
         if (!this.running) return;
-        if (UNAUTHORIZED_CLOSE_CODES.has(info.code) || (!info.opened && !this.everOpened && this.attempt === 0)) {
-          // Refused, or never reachable since page load: the cookie is the
-          // likely cause. Show the login screen; it calls start() again.
-          this.log(`feed closed (code ${info.code}) before authorizing; login required`);
+        if (isUnauthorizedClose(info.code)) {
+          // The broker accepts the upgrade and then closes with 4401 when the
+          // Owner cookie is missing or stale. Show the login screen; it calls
+          // start() again. Any other close is transient.
+          this.log(`feed closed (code ${info.code}): Owner cookie refused, login required`);
           this.running = false;
           this.store.dispatch({ type: 'connection', status: 'unauthorized' });
           return;

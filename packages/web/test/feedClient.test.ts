@@ -1,4 +1,4 @@
-import { createFrameFactory, encodeFrame, type BrokerToUiFrame } from '@orchvis/protocol';
+import { WS_CLOSE, createFrameFactory, encodeFrame, type BrokerToUiFrame } from '@orchvis/protocol';
 import { describe, expect, it } from 'vitest';
 import { BACKOFF_MAX_MS, BACKOFF_MIN_MS, backoffDelay } from '../src/net/backoff';
 import { FeedClient } from '../src/net/feedClient';
@@ -92,18 +92,33 @@ describe('FeedClient', () => {
     expect(Object.keys(h.store.getState().data.nodes)).toEqual(['b:2']);
   });
 
-  it('shows login when the first connection never opens or the cookie is refused', () => {
+  it('shows login only on WS_CLOSE.unauthorized (4401), and stops retrying', () => {
     const h = new Harness();
     h.client.start();
-    h.last.onClose({ code: 1006, opened: false });
+    h.last.onOpen();
+    h.last.onClose({ code: WS_CLOSE.unauthorized, opened: true });
     expect(h.store.getState().connection).toBe('unauthorized');
     expect(h.timers).toHaveLength(0);
+    // The login screen restarts the client after a successful login.
+    h.client.start();
+    expect(h.handlers).toHaveLength(2);
+    expect(h.store.getState().connection).toBe('reconnecting');
+  });
 
-    const h2 = new Harness();
-    h2.client.start();
-    h2.last.onOpen();
-    h2.last.onClose({ code: 4401, opened: true });
-    expect(h2.store.getState().connection).toBe('unauthorized');
+  it.each([
+    ['forbiddenOrigin', WS_CLOSE.forbiddenOrigin, true],
+    ['shuttingDown', WS_CLOSE.shuttingDown, true],
+    ['policy violation', 1008, true],
+    ['abnormal drop before open', 1006, false],
+  ])('treats %s as transient and reconnects with backoff', (_label, code, opened) => {
+    const h = new Harness();
+    h.client.start();
+    if (opened) h.last.onOpen();
+    h.last.onClose({ code, opened });
+    expect(h.store.getState().connection).toBe('reconnecting');
+    expect(h.timers).toHaveLength(1);
+    h.runTimers();
+    expect(h.handlers).toHaveLength(2);
   });
 
   it('sends controls only while open, with unique frame IDs', () => {
