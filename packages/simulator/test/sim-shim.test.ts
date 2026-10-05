@@ -110,6 +110,30 @@ describe('SimShim', () => {
     expect(s.stats.delivered).toBe(1);
   });
 
+  it('remembers at most deliveredIdLimit IDs, forgetting the oldest first', async () => {
+    broker = await startFakeBroker();
+    const s = shimFor(0, { deliveredIdLimit: 2 });
+    await s.start();
+    const msg = (n: number): Message => ({
+      id: `01J9ZQ3V5X8K2M4N6P7R8S9T0${n}`,
+      threadId: `${s.sessionId}|owner`,
+      from: { kind: 'owner' },
+      fromName: 'owner',
+      to: { kind: 'session', id: s.sessionId },
+      senderKind: 'owner',
+      kind: 'chat',
+      body: `m${n}`,
+      attachments: [],
+      ts: n,
+    });
+    for (const n of [1, 2, 3, 4]) broker.deliver(s.sessionId, msg(n));
+    await waitUntil(() => s.stats.delivered === 4);
+    // 4 and 3 are remembered; 1 was forgotten, so it counts as new again.
+    broker.deliver(s.sessionId, msg(4));
+    broker.deliver(s.sessionId, msg(1));
+    await waitUntil(() => s.stats.duplicateDeliveries === 1 && s.stats.delivered === 5);
+  });
+
   it('reconnects with backoff and resends hello (canonical ID) and the last register', async () => {
     broker = await startFakeBroker({ aliasTo: 'canonical-host:abc123' });
     const clock = new FakeClock();
