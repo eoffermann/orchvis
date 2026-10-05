@@ -351,6 +351,10 @@ export function GraphView({ onSelect }: GraphViewProps) {
                     ref={edgeHitEls.ref(e.threadId)}
                     className="edge-hit"
                     strokeWidth={EDGE_HIT_PX}
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`Open thread between ${state.data.nodes[e.a]?.name ?? e.a} and ${state.data.nodes[e.b]?.name ?? e.b}`}
+                    onKeyDown={onActivateKey(() => select({ kind: 'edge', threadId: e.threadId }))}
                     onClick={(ev) => {
                       ev.stopPropagation();
                       select({ kind: 'edge', threadId: e.threadId });
@@ -383,6 +387,10 @@ export function GraphView({ onSelect }: GraphViewProps) {
                 onPointerCancel={onNodePointerCancel}
                 onPointerEnter={hover(n.id)}
                 onPointerLeave={hover(null)}
+                tabIndex={n.matches ? 0 : -1}
+                role="button"
+                aria-label={`Open chat with ${s.name} on ${s.hostname}`}
+                onKeyDown={n.matches ? onActivateKey(() => select({ kind: 'node', id: n.id })) : undefined}
               >
                 <title>
                   {s.name} on {s.hostname}: {s.status}, {s.delivery} mode{s.connected ? '' : ', disconnected'}
@@ -418,6 +426,10 @@ export function GraphView({ onSelect }: GraphViewProps) {
                     key={m.kind}
                     className={`media-icon media-icon--${m.kind}`}
                     transform={`translate(${(i - (e.media.length - 1) / 2) * MIN_HIT_PX},0)`}
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`Browse ${m.count} ${MEDIA_LABELS[m.kind]}`}
+                    onKeyDown={onActivateKey(() => select({ kind: 'media', threadId: e.threadId, mediaKind: m.kind }))}
                     onClick={(ev) => {
                       ev.stopPropagation();
                       select({ kind: 'media', threadId: e.threadId, mediaKind: m.kind });
@@ -443,4 +455,14 @@ export function GraphView({ onSelect }: GraphViewProps) {
       </g>
     </svg>
   );
+}
+
+/** A keydown handler that runs `fn` on Enter or Space, for SVG elements acting as buttons. */
+function onActivateKey(fn: () => void) {
+  return (e: { key: string; preventDefault(): void; stopPropagation(): void }) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault();
+    e.stopPropagation();
+    fn();
+  };
 }
