@@ -23,14 +23,17 @@ describe('linkDistance', () => {
 });
 
 describe('layout constants', () => {
-  it('match the plan', () => {
-    expect(LAYOUT.linkStrength).toBe(0.3);
+  it('match the plan, as tuned', () => {
+    expect(LAYOUT.linkStrength).toBe(0.15);
     expect(LAYOUT.groupStrength).toBe(0.08);
     expect(LAYOUT.collideRadius).toBe(48);
+    expect(LAYOUT.collidePadding).toBe(6);
     expect(LAYOUT.manyBodyStrength).toBe(-300);
     expect(LAYOUT.velocityDecay).toBe(0.6);
-    expect(LAYOUT.warmAlphaTarget).toBe(0.05);
-    expect(LAYOUT.warmMs).toBe(2000);
+    expect(LAYOUT.warmAlphaTarget).toBe(0.03);
+    expect(LAYOUT.warmMs).toBe(1000);
+    expect(LAYOUT.distanceChangePx).toBe(48);
+    expect(LAYOUT.alphaMin).toBe(0.005);
   });
 });
 
@@ -85,7 +88,7 @@ describe('GraphLayout', () => {
     layout.update([...nodes, { id: 'h:new', groups: ['g1'] }], [{ ...links[0]!, weight: 1 }, links[1]!], t);
     expect(layout.sim.alpha()).toBeLessThan(0.05);
     expect(layout.sim.alphaTarget()).toBe(LAYOUT.warmAlphaTarget);
-    expect(layout.isWarm(t + 1000)).toBe(true);
+    expect(layout.isWarm(t + LAYOUT.warmMs / 2)).toBe(true);
     t = settle(layout, t);
     expect(layout.sim.alphaTarget()).toBe(0);
     expect(layout.sim.alpha()).toBeLessThan(0.1);

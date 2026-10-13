@@ -3,16 +3,14 @@ import type { MediaKind } from '@orchvis/protocol';
 import { formatAgo } from '../overlays/model';
 import type { Selection } from '../store/types';
 import { useAppState, useStoreInstance } from '../store/useStore';
+import { HOST_BASELINE, NAME_BASELINE, NODE_RADIUS, hostLabel, nodeFootprint } from './footprint';
 import { hullPath, hullTop, paddedHull, type Point } from './hull';
 import { GraphLayout } from './layout';
 import { buildGraphModel, type GraphModel } from './model';
 import { HaloSystem, PulseSystem } from './pulses';
 import { useRefMap } from './useRefMap';
-import { bounds, fitTransform, lerpTransform, type ViewTransform } from './viewport';
+import { AutoFit, bounds, transformAttr } from './viewport';
 import { HALO_COLOR, PULSE_COLOR, PULSE_MEDIA_COLOR, STATUS_COLORS, displayedEdgeOpacity, edgeWidth } from './visual';
-
-/** Visible node radius, in layout px. */
-export const NODE_RADIUS = 20;
 
 /** Minimum hit target size on screen, in CSS px. */
 export const MIN_HIT_PX = 44;
@@ -74,7 +72,7 @@ export function GraphView({ onSelect }: GraphViewProps) {
   const viewportRef = useRef<SVGGElement | null>(null);
   const pulseLayerRef = useRef<SVGGElement | null>(null);
   const sizeRef = useRef({ width: 0, height: 0 });
-  const viewRef = useRef<ViewTransform>({ x: 0, y: 0, scale: 1 });
+  const autoFitRef = useRef(new AutoFit());
   const pressRef = useRef<PressState | null>(null);
   const lastTapRef = useRef<{ id: string; time: number } | null>(null);
 
@@ -97,7 +95,7 @@ export function GraphView({ onSelect }: GraphViewProps) {
   // Keep the simulation in step with the graph and the decayed weights.
   useEffect(() => {
     layoutRef.current?.update(
-      model.nodes.map((n) => ({ id: n.id, groups: n.groups })),
+      model.nodes.map((n) => ({ id: n.id, groups: n.groups, footprint: nodeFootprint(n.session.name, hostLabel(n.session, state.now)) })),
       model.edges.map((e) => ({ id: e.threadId, source: e.a, target: e.b, weight: e.weight })),
       performance.now(),
     );
@@ -145,6 +143,10 @@ export function GraphView({ onSelect }: GraphViewProps) {
     let raf = 0;
     let lastScale = Number.NaN;
     let lastModel: GraphModel | null = null;
+    // What the positions below were last written for. Rewriting unchanged
+    // attributes still invalidates paint, so a still graph writes nothing.
+    let drawnModel: GraphModel | null = null;
+    let drawnTransform = '';
     const pulseEls: SVGCircleElement[] = [];
     const frame = () => {
       raf = requestAnimationFrame(frame);
@@ -152,16 +154,20 @@ export function GraphView({ onSelect }: GraphViewProps) {
       const layout = layoutRef.current;
       const viewport = viewportRef.current;
       if (!layout || !viewport) return;
-      layout.tick(now);
+      const moved = layout.tick(now);
       const m = modelRef.current;
 
       // Auto-fit, frozen while a node is being dragged so it stays under the finger.
-      if (!pressRef.current?.dragging) {
-        const target = fitTransform(bounds(layout.allNodes()), sizeRef.current.width, sizeRef.current.height);
-        viewRef.current = Number.isNaN(lastScale) ? target : lerpTransform(viewRef.current, target, 0.08);
+      const fit = autoFitRef.current;
+      if (pressRef.current?.dragging) fit.hold();
+      else fit.step(bounds(layout.allNodes()), sizeRef.current.width, sizeRef.current.height);
+      const v = fit.current() ?? { x: 0, y: 0, scale: 1 };
+      const transform = transformAttr(v);
+      const viewChanged = transform !== drawnTransform;
+      if (viewChanged) {
+        viewport.setAttribute('transform', transform);
+        drawnTransform = transform;
       }
-      const v = viewRef.current;
-      viewport.setAttribute('transform', `translate(${v.x.toFixed(2)},${v.y.toFixed(2)}) scale(${v.scale.toFixed(4)})`);
       const inv = 1 / v.scale;
       if (Math.abs(v.scale - lastScale) > 0.005 || m !== lastModel) {
         // Keep hit targets at their screen size whatever the zoom, including
@@ -173,46 +179,49 @@ export function GraphView({ onSelect }: GraphViewProps) {
         for (const el of edgeHitEls.map.values()) el.setAttribute('stroke-width', (EDGE_HIT_PX * inv).toFixed(1));
       }
 
-      for (const [id, el] of nodeEls.map) {
-        const n = layout.node(id);
-        if (n) el.setAttribute('transform', `translate(${n.x.toFixed(1)},${n.y.toFixed(1)})`);
-      }
-
-      for (const e of m.edges) {
-        const a = layout.node(e.a);
-        const b = layout.node(e.b);
-        if (!a || !b) continue;
-        for (const el of [edgeLineEls.map.get(e.threadId), edgeHitEls.map.get(e.threadId)]) {
-          if (!el) continue;
-          el.setAttribute('x1', a.x.toFixed(1));
-          el.setAttribute('y1', a.y.toFixed(1));
-          el.setAttribute('x2', b.x.toFixed(1));
-          el.setAttribute('y2', b.y.toFixed(1));
-        }
-        const icon = iconEls.map.get(e.threadId);
-        if (icon) {
-          icon.setAttribute(
-            'transform',
-            `translate(${((a.x + b.x) / 2).toFixed(1)},${((a.y + b.y) / 2).toFixed(1)}) scale(${inv.toFixed(4)})`,
-          );
-        }
-      }
-
-      for (const g of m.groups) {
-        const path = hullPathEls.map.get(g.key);
-        if (!path) continue;
-        const pts: Point[] = [];
-        for (const id of g.members) {
+      if (moved || viewChanged || m !== drawnModel) {
+        drawnModel = m;
+        for (const [id, el] of nodeEls.map) {
           const n = layout.node(id);
-          if (n) pts.push([n.x, n.y]);
+          if (n) el.setAttribute('transform', `translate(${n.x.toFixed(1)},${n.y.toFixed(1)})`);
         }
-        const hull = paddedHull(pts);
-        path.setAttribute('d', hullPath(hull));
-        const top = hullTop(hull);
-        const label = hullLabelEls.map.get(g.key);
-        if (label && top) {
-          label.setAttribute('x', top[0].toFixed(1));
-          label.setAttribute('y', (top[1] - 8).toFixed(1));
+
+        for (const e of m.edges) {
+          const a = layout.node(e.a);
+          const b = layout.node(e.b);
+          if (!a || !b) continue;
+          for (const el of [edgeLineEls.map.get(e.threadId), edgeHitEls.map.get(e.threadId)]) {
+            if (!el) continue;
+            el.setAttribute('x1', a.x.toFixed(1));
+            el.setAttribute('y1', a.y.toFixed(1));
+            el.setAttribute('x2', b.x.toFixed(1));
+            el.setAttribute('y2', b.y.toFixed(1));
+          }
+          const icon = iconEls.map.get(e.threadId);
+          if (icon) {
+            icon.setAttribute(
+              'transform',
+              `translate(${((a.x + b.x) / 2).toFixed(1)},${((a.y + b.y) / 2).toFixed(1)}) scale(${inv.toFixed(4)})`,
+            );
+          }
+        }
+
+        for (const g of m.groups) {
+          const path = hullPathEls.map.get(g.key);
+          if (!path) continue;
+          const pts: Point[] = [];
+          for (const id of g.members) {
+            const n = layout.node(id);
+            if (n) pts.push([n.x, n.y]);
+          }
+          const hull = paddedHull(pts);
+          path.setAttribute('d', hullPath(hull));
+          const top = hullTop(hull);
+          const label = hullLabelEls.map.get(g.key);
+          if (label && top) {
+            label.setAttribute('x', top[0].toFixed(1));
+            label.setAttribute('y', (top[1] - 8).toFixed(1));
+          }
         }
       }
 
@@ -233,14 +242,15 @@ export function GraphView({ onSelect }: GraphViewProps) {
           const a = p ? layout.node(p.from) : undefined;
           const b = p ? layout.node(p.to) : undefined;
           if (!p || !a || !b) {
-            el.setAttribute('visibility', 'hidden');
+            if (el.getAttribute('visibility') !== 'hidden') el.setAttribute('visibility', 'hidden');
             continue;
           }
           const t = p.t < 0.5 ? 2 * p.t * p.t : 1 - (-2 * p.t + 2) ** 2 / 2;
-          el.setAttribute('visibility', 'visible');
+          if (el.getAttribute('visibility') !== 'visible') el.setAttribute('visibility', 'visible');
           el.setAttribute('cx', (a.x + (b.x - a.x) * t).toFixed(1));
           el.setAttribute('cy', (a.y + (b.y - a.y) * t).toFixed(1));
-          el.setAttribute('fill', p.media ? PULSE_MEDIA_COLOR : PULSE_COLOR);
+          const fill = p.media ? PULSE_MEDIA_COLOR : PULSE_COLOR;
+          if (el.getAttribute('fill') !== fill) el.setAttribute('fill', fill);
         }
       }
 
@@ -366,70 +376,7 @@ export function GraphView({ onSelect }: GraphViewProps) {
           })}
         </g>
         <g ref={pulseLayerRef} className="layer-pulses" />
-        <g className="layer-nodes">
-          {model.nodes.map((n) => {
-            const s = n.session;
-            const cls = ['node'];
-            if (!s.connected) cls.push('node--offline');
-            if (!n.matches) cls.push('node--filtered');
-            if (selection?.kind === 'node' && selection.id === n.id) cls.push('node--selected');
-            if (hoverNodeId === n.id) cls.push('node--hover');
-            return (
-              <g
-                key={n.id}
-                ref={nodeEls.ref(n.id)}
-                className={cls.join(' ')}
-                onPointerDown={n.matches ? onNodePointerDown(n.id) : undefined}
-                onPointerMove={onNodePointerMove}
-                onPointerUp={onNodePointerUp}
-                onPointerCancel={onNodePointerCancel}
-                onPointerEnter={hover(n.id)}
-                onPointerLeave={hover(null)}
-                tabIndex={n.matches ? 0 : -1}
-                role="button"
-                aria-label={`Open chat with ${s.name} on ${s.hostname}`}
-                onKeyDown={n.matches ? onActivateKey(() => select({ kind: 'node', id: n.id })) : undefined}
-              >
-                <title>
-                  {s.name} on {s.hostname}: {s.status}, {s.delivery} mode
-                  {s.connected ? '' : `, disconnected, last seen ${formatAgo(state.now - s.lastSeen)}`}
-                </title>
-                <circle ref={haloEls.ref(n.id)} className="node-halo" r={NODE_RADIUS} stroke={HALO_COLOR} opacity={0} />
-                <circle className="node-hit" r={MIN_HIT_PX / 2 + 4} />
-                <circle className="node-body" r={NODE_RADIUS} />
-                <circle className="node-ring" r={NODE_RADIUS} stroke={STATUS_COLORS[s.status]} />
-                <text className="node-name" y={NODE_RADIUS + 18} textAnchor="middle">
-                  {s.name}
-                </text>
-                <text className="node-host" y={NODE_RADIUS + 34} textAnchor="middle">
-                  {s.connected ? s.hostname : `${s.hostname} · last seen ${formatAgo(state.now - s.lastSeen)}`}
-                </text>
-                {s.delivery === 'poll' && (
-                  <g className="node-badge" transform={`translate(${NODE_RADIUS - 4},${-NODE_RADIUS + 4})`}>
-                    <circle r={9} />
-                    <text textAnchor="middle" dy="0.35em">
-                      P
-                    </text>
-                  </g>
-                )}
-              </g>
-            );
-          })}
-        </g>
-        {/* Repo labels sit above the nodes, so a member of another hull never hides them. */}
-        <g className="layer-hull-labels">
-          {model.groups.map((g) => (
-            <text
-              key={g.key}
-              ref={hullLabelEls.ref(g.key)}
-              className={g.matches ? 'hull-label' : 'hull-label hull--filtered'}
-              fill={g.color}
-              textAnchor="middle"
-            >
-              {g.name}
-            </text>
-          ))}
-        </g>
+        {/* Media icons sit under the nodes: where one overlaps a node, the node takes the click. */}
         <g className="layer-media">
           {model.edges.map((e) =>
             e.media.length === 0 || !e.matches ? null : (
@@ -464,6 +411,70 @@ export function GraphView({ onSelect }: GraphViewProps) {
               </g>
             ),
           )}
+        </g>
+        <g className="layer-nodes">
+          {model.nodes.map((n) => {
+            const s = n.session;
+            const cls = ['node'];
+            if (!s.connected) cls.push('node--offline');
+            if (!n.matches) cls.push('node--filtered');
+            if (selection?.kind === 'node' && selection.id === n.id) cls.push('node--selected');
+            if (hoverNodeId === n.id) cls.push('node--hover');
+            return (
+              <g
+                key={n.id}
+                ref={nodeEls.ref(n.id)}
+                className={cls.join(' ')}
+                onPointerDown={n.matches ? onNodePointerDown(n.id) : undefined}
+                onPointerMove={onNodePointerMove}
+                onPointerUp={onNodePointerUp}
+                onPointerCancel={onNodePointerCancel}
+                onPointerEnter={hover(n.id)}
+                onPointerLeave={hover(null)}
+                tabIndex={n.matches ? 0 : -1}
+                role="button"
+                aria-label={`Open chat with ${s.name} on ${s.hostname}`}
+                onKeyDown={n.matches ? onActivateKey(() => select({ kind: 'node', id: n.id })) : undefined}
+              >
+                <title>
+                  {s.name} on {s.hostname}: {s.status}, {s.delivery} mode
+                  {s.connected ? '' : `, disconnected, last seen ${formatAgo(state.now - s.lastSeen)}`}
+                </title>
+                <circle ref={haloEls.ref(n.id)} className="node-halo" r={NODE_RADIUS} stroke={HALO_COLOR} opacity={0} />
+                <circle className="node-hit" r={MIN_HIT_PX / 2 + 4} />
+                <circle className="node-body" r={NODE_RADIUS} />
+                <circle className="node-ring" r={NODE_RADIUS} stroke={STATUS_COLORS[s.status]} />
+                <text className="node-name" y={NAME_BASELINE} textAnchor="middle">
+                  {s.name}
+                </text>
+                <text className="node-host" y={HOST_BASELINE} textAnchor="middle">
+                  {hostLabel(s, state.now)}
+                </text>
+                {s.delivery === 'poll' && (
+                  <g className="node-badge" transform={`translate(${NODE_RADIUS - 4},${-NODE_RADIUS + 4})`}>
+                    <circle r={9} />
+                    <text textAnchor="middle" dy="0.35em">
+                      P
+                    </text>
+                  </g>
+                )}
+              </g>
+            );
+          })}
+        </g>
+        {/* Repo labels sit above the nodes, so a member of another hull never hides them. */}
+        <g className="layer-hull-labels">
+          {model.groups.map((g) => (
+            <text
+              key={g.key}
+              ref={hullLabelEls.ref(g.key)}
+              className={g.matches ? 'hull-label' : 'hull-label hull--filtered'}
+              fill={g.color}
+              textAnchor="middle"
+            >
+              {g.name}
+            </text>
+          ))}
         </g>
       </g>
     </svg>

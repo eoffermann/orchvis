@@ -81,7 +81,8 @@ describe('ShowcaseBroker', () => {
     const model = buildGraphModel(state);
     expect(model.groups.length).toBeGreaterThanOrEqual(4);
     expect(model.edges.length).toBeGreaterThan(25);
-  });
+    // CPU-bound: about 1.5 s alone, past the 5 s default when every package tests at once.
+  }, 20_000);
 
   it('answers pings, controls and Owner sends, with a canned reply later', () => {
     const sb = new ShowcaseBroker({ now: T0 });

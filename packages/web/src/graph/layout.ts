@@ -1,5 +1,4 @@
 import {
-  forceCollide,
   forceLink,
   forceManyBody,
   forceSimulation,
@@ -11,34 +10,71 @@ import {
   type SimulationLinkDatum,
   type SimulationNodeDatum,
 } from 'd3-force';
+import type { Footprint } from './footprint';
 
-/** Layout constants from the plan's "Layout" section. Starting values, tuned against the simulator. */
-export const LAYOUT = Object.freeze({
+/** The tunable layout constants. */
+export interface LayoutParams {
   /** Link distance at weight 0, in px. */
-  linkDistanceMax: 320,
-  /** Link distance at weight {@link LAYOUT.linkWeightFull} and above, in px. */
-  linkDistanceMin: 90,
+  readonly linkDistanceMax: number;
+  /** Link distance at weight {@link LayoutParams.linkWeightFull} and above, in px. */
+  readonly linkDistanceMin: number;
   /** Weight at which the link distance bottoms out. */
-  linkWeightFull: 20,
+  readonly linkWeightFull: number;
   /** Link strength. */
-  linkStrength: 0.3,
+  readonly linkStrength: number;
   /** Pull toward each repo group's centroid. */
-  groupStrength: 0.08,
-  /** Collision radius, in px. */
-  collideRadius: 48,
+  readonly groupStrength: number;
+  /** Collision half-size of a node given no {@link Footprint}, in px. */
+  readonly collideRadius: number;
+  /** Gap kept between two nodes' footprints, in px. */
+  readonly collidePadding: number;
+  /** Fraction of a footprint overlap resolved per tick. */
+  readonly collideStrength: number;
   /** Many-body strength. */
-  manyBodyStrength: -300,
+  readonly manyBodyStrength: number;
   /** Weak centering strength (forceX/forceY toward the origin). */
-  centerStrength: 0.02,
+  readonly centerStrength: number;
   /** Velocity decay. */
-  velocityDecay: 0.6,
+  readonly velocityDecay: number;
+  /** Alpha below which the simulation stops; higher cuts the slow-drift tail of each warm-up. */
+  readonly alphaMin: number;
   /** alphaTarget held after a weight change. */
-  warmAlphaTarget: 0.05,
+  readonly warmAlphaTarget: number;
   /** How long the warm alphaTarget is held, in ms. */
-  warmMs: 2_000,
+  readonly warmMs: number;
   /** A link's distance must move this far, in px, to count as a weight change. */
-  distanceChangePx: 8,
+  readonly distanceChangePx: number;
   /** Random offset for a new node around its entry point, in px. */
+  readonly entryJitter: number;
+}
+
+/**
+ * Layout constants. The plan's "Layout" section gave starting values; these
+ * are tuned with `scripts/layout-report.ts`. Changes from the plan: link
+ * strength 0.15 (from 0.3) so cross-repo threads stop dragging nodes into
+ * other repos' hulls, and collision on each node's footprint, circle plus
+ * labels, 6 px apart, instead of a 48 px circle, so labels never overlap.
+ * For stillness under steady traffic, a weight change warms the layout only
+ * when it moves a link's target length by 48 px (from 8), the warm-up is
+ * gentler and shorter (alphaTarget 0.03 for 1 s, from 0.05 for 2 s), and the
+ * simulation stops at alpha 0.005 (from d3's 0.001) instead of crawling.
+ */
+export const LAYOUT: LayoutParams = Object.freeze({
+  linkDistanceMax: 320,
+  linkDistanceMin: 90,
+  linkWeightFull: 20,
+  linkStrength: 0.15,
+  groupStrength: 0.08,
+  collideRadius: 48,
+  collidePadding: 6,
+  collideStrength: 1,
+  manyBodyStrength: -300,
+  centerStrength: 0.02,
+  velocityDecay: 0.6,
+  alphaMin: 0.005,
+  warmAlphaTarget: 0.03,
+  warmMs: 1_000,
+  distanceChangePx: 48,
   entryJitter: 12,
 });
 
@@ -46,9 +82,9 @@ export const LAYOUT = Object.freeze({
  * Link distance for a decayed edge weight: linear from 320 px at weight 0 to
  * 90 px at weight 20, clamped outside that range.
  */
-export function linkDistance(weight: number): number {
-  const f = Math.min(1, Math.max(0, weight / LAYOUT.linkWeightFull));
-  return LAYOUT.linkDistanceMax - (LAYOUT.linkDistanceMax - LAYOUT.linkDistanceMin) * f;
+export function linkDistance(weight: number, p: LayoutParams = LAYOUT): number {
+  const f = Math.min(1, Math.max(0, weight / p.linkWeightFull));
+  return p.linkDistanceMax - (p.linkDistanceMax - p.linkDistanceMin) * f;
 }
 
 /** A node as the simulation holds it. */
@@ -57,6 +93,8 @@ export interface LayoutNode extends SimulationNodeDatum {
   id: string;
   /** Repo keys the node belongs to. */
   groups: readonly string[];
+  /** Box kept clear of other nodes' boxes. */
+  footprint: Footprint;
   /** Current position (always set after entry). */
   x: number;
   /** Current position (always set after entry). */
@@ -77,6 +115,8 @@ export interface LayoutNodeInput {
   id: string;
   /** Repo keys. */
   groups: readonly string[];
+  /** Drawn size with labels; a square of {@link LayoutParams.collideRadius} when absent. */
+  footprint?: Footprint;
 }
 
 /** Input link for {@link GraphLayout.update}. */
@@ -120,6 +160,7 @@ export function entryPosition(
   groups: readonly string[],
   centroids: ReadonlyMap<string, { x: number; y: number }>,
   random: () => number = Math.random,
+  jitter: number = LAYOUT.entryJitter,
 ): { x: number; y: number } {
   let x = 0;
   let y = 0;
@@ -136,7 +177,7 @@ export function entryPosition(
     x /= n;
     y /= n;
   }
-  const j = LAYOUT.entryJitter;
+  const j = jitter;
   return { x: x + (random() * 2 - 1) * j, y: y + (random() * 2 - 1) * j };
 }
 
@@ -151,6 +192,57 @@ export function forceGroups(strength: number = LAYOUT.groupStrength): Force<Layo
         if (!c) continue;
         node.vx = (node.vx ?? 0) + (c.x - node.x) * strength * alpha;
         node.vy = (node.vy ?? 0) + (c.y - node.y) * strength * alpha;
+      }
+    }
+  };
+  force.initialize = (n: LayoutNode[]) => {
+    nodes = n;
+  };
+  return force;
+}
+
+/**
+ * A d3 force keeping node footprints (circle plus labels) from overlapping.
+ * Each overlapping pair is pushed apart along the axis where the overlap is
+ * smaller, by `strength` of the overlap per tick, like d3's forceCollide but
+ * for boxes. A pinned node does not move; the other takes the whole push.
+ */
+export function forceBoxCollide(
+  padding: number = LAYOUT.collidePadding,
+  strength: number = LAYOUT.collideStrength,
+): Force<LayoutNode, LayoutLink> {
+  let nodes: LayoutNode[] = [];
+  const force = () => {
+    for (let i = 0; i < nodes.length; i++) {
+      const a = nodes[i] as LayoutNode;
+      const fa = a.footprint;
+      for (let j = i + 1; j < nodes.length; j++) {
+        const b = nodes[j] as LayoutNode;
+        const fb = b.footprint;
+        const ax = a.x + (a.vx ?? 0);
+        const ay = a.y + (a.vy ?? 0);
+        const bx = b.x + (b.vx ?? 0);
+        const by = b.y + (b.vy ?? 0);
+        const dx = bx - ax;
+        const ox = fa.halfWidth + fb.halfWidth + padding - Math.abs(dx);
+        if (ox <= 0) continue;
+        const oy = Math.min(ay + fa.bottom, by + fb.bottom) - Math.max(ay + fa.top, by + fb.top) + padding;
+        if (oy <= 0) continue;
+        const wa = a.fx == null ? 1 : 0;
+        const wb = b.fx == null ? 1 : 0;
+        if (wa + wb === 0) continue;
+        if (ox < oy) {
+          const push = (ox * strength) / (wa + wb);
+          const s = dx === 0 ? (i < j ? 1 : -1) : Math.sign(dx);
+          a.vx = (a.vx ?? 0) - s * push * wa;
+          b.vx = (b.vx ?? 0) + s * push * wb;
+        } else {
+          const dy = by + (fb.top + fb.bottom) / 2 - (ay + (fa.top + fa.bottom) / 2);
+          const push = (oy * strength) / (wa + wb);
+          const s = dy === 0 ? 1 : Math.sign(dy);
+          a.vy = (a.vy ?? 0) - s * push * wa;
+          b.vy = (b.vy ?? 0) + s * push * wb;
+        }
       }
     }
   };
@@ -180,22 +272,32 @@ export class GraphLayout {
   private dragging = 0;
   private firstLayout = true;
   private readonly random: () => number;
+  /** The constants this layout runs with. */
+  readonly params: LayoutParams;
+  private readonly defaultFootprint: Footprint;
 
-  /** Creates an empty layout. `random` seeds entry jitter (injectable for tests). */
-  constructor(random: () => number = Math.random) {
+  /**
+   * Creates an empty layout. `random` seeds entry jitter (injectable for
+   * tests); `params` overrides constants, for tuning.
+   */
+  constructor(random: () => number = Math.random, params: Partial<LayoutParams> = {}) {
     this.random = random;
+    const p = (this.params = { ...LAYOUT, ...params });
+    const r = p.collideRadius;
+    this.defaultFootprint = { halfWidth: r, top: -r, bottom: r };
     this.linkForce = forceLink<LayoutNode, LayoutLink>([])
       .id((d) => d.id)
-      .distance((l) => linkDistance(l.weight))
-      .strength(LAYOUT.linkStrength);
+      .distance((l) => linkDistance(l.weight, p))
+      .strength(p.linkStrength);
     this.sim = forceSimulation<LayoutNode, LayoutLink>([])
-      .velocityDecay(LAYOUT.velocityDecay)
+      .velocityDecay(p.velocityDecay)
+      .alphaMin(p.alphaMin)
       .force('link', this.linkForce)
-      .force('group', forceGroups())
-      .force('charge', forceManyBody<LayoutNode>().strength(LAYOUT.manyBodyStrength))
-      .force('collide', forceCollide<LayoutNode>(LAYOUT.collideRadius))
-      .force('x', forceX<LayoutNode>(0).strength(LAYOUT.centerStrength))
-      .force('y', forceY<LayoutNode>(0).strength(LAYOUT.centerStrength))
+      .force('group', forceGroups(p.groupStrength))
+      .force('charge', forceManyBody<LayoutNode>().strength(p.manyBodyStrength))
+      .force('collide', forceBoxCollide(p.collidePadding, p.collideStrength))
+      .force('x', forceX<LayoutNode>(0).strength(p.centerStrength))
+      .force('y', forceY<LayoutNode>(0).strength(p.centerStrength))
       .stop();
   }
 
@@ -234,15 +336,17 @@ export class GraphLayout {
     for (const [g, p] of anchors) centroids.set(g, p);
     for (const input of nodes) {
       seen.add(input.id);
+      const footprint = input.footprint ?? this.defaultFootprint;
       const existing = this.nodes.get(input.id);
       if (existing) {
         if (!sameList(existing.groups, input.groups)) {
           existing.groups = input.groups;
         }
+        existing.footprint = footprint;
         continue;
       }
-      const pos = entryPosition(input.groups, centroids, this.random);
-      this.nodes.set(input.id, { id: input.id, groups: input.groups, x: pos.x, y: pos.y, vx: 0, vy: 0 });
+      const pos = entryPosition(input.groups, centroids, this.random, this.params.entryJitter);
+      this.nodes.set(input.id, { id: input.id, groups: input.groups, footprint, x: pos.x, y: pos.y, vx: 0, vy: 0 });
       structural = true;
     }
     for (const id of [...this.nodes.keys()]) {
@@ -266,9 +370,9 @@ export class GraphLayout {
         nextLinks.set(l.id, { id: l.id, source: l.source, target: l.target, weight: l.weight });
         structural = true;
       }
-      const d = linkDistance(l.weight);
+      const d = linkDistance(l.weight, this.params);
       const applied = this.appliedDistance.get(l.id);
-      if (applied === undefined || Math.abs(applied - d) > LAYOUT.distanceChangePx) {
+      if (applied === undefined || Math.abs(applied - d) > this.params.distanceChangePx) {
         this.appliedDistance.set(l.id, d);
         distanceMoved = true;
       }
@@ -286,8 +390,7 @@ export class GraphLayout {
       this.linkForce.links([...this.links.values()]);
     } else {
       // Re-evaluate cached link distances for the new weights.
-      this.linkForce.distance((l) => linkDistance(l.weight));
-    }
+      this.linkForce.distance((l) => linkDistance(l.weight, this.params));    }
 
     if (this.firstLayout) {
       if (this.nodes.size > 0) {
@@ -301,8 +404,8 @@ export class GraphLayout {
 
   /** Holds alphaTarget at the warm value for {@link LAYOUT.warmMs} from `now`. */
   warm(now: number): void {
-    this.warmUntil = Math.max(this.warmUntil, now + LAYOUT.warmMs);
-    this.sim.alphaTarget(LAYOUT.warmAlphaTarget);
+    this.warmUntil = Math.max(this.warmUntil, now + this.params.warmMs);
+    this.sim.alphaTarget(this.params.warmAlphaTarget);
   }
 
   /**
@@ -323,7 +426,7 @@ export class GraphLayout {
     this.dragging += 1;
     n.fx = x;
     n.fy = y;
-    this.sim.alphaTarget(LAYOUT.warmAlphaTarget);
+    this.sim.alphaTarget(this.params.warmAlphaTarget);
   }
 
   /** Moves a dragged node. */
