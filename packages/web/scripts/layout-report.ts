@@ -64,12 +64,13 @@ for (const v of variants) {
         f((r) => r.meanSpeed).padStart(6),
         f((r) => r.p95Step).padStart(6),
         f((r) => r.settleFrames, 0).padStart(6),
+        f((r) => r.stillFraction, 2).padStart(6),
       ].join(' '),
     );
   }
 }
 log('done');
 console.log(
-  ['variant'.padEnd(14), '  n', 'ovl@set', 'ovl@end', 'ovl^max', 'nodeOvl', 'intr', 'intr^', ' fit', ' prox', 'speed', 'p95/s', 'settle'].join(' '),
+  ['variant'.padEnd(14), '  n', 'ovl@set', 'ovl@end', 'ovl^max', 'nodeOvl', 'intr', 'intr^', ' fit', ' prox', 'speed', 'p95/s', 'settle', 'still'].join(' '),
 );
 for (const r of rows) console.log(r);

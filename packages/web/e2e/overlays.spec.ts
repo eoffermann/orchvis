@@ -28,10 +28,12 @@ test('node chat: open from the graph, send a message, see it in the Owner thread
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole('button', { name: /this session's sends/ })).toBeVisible();
   const input = dialog.getByLabel(/^Message to /);
-  await input.fill('e2e hello <img src=x onerror=alert(1)>');
+  // The mock feed outlives each test, so earlier runs' messages are still in this thread.
+  const text = `e2e hello ${Date.now()} <img src=x onerror=alert(1)>`;
+  await input.fill(text);
   await input.press('Enter');
   const log = dialog.getByRole('log');
-  await expect(log.getByText('e2e hello <img src=x onerror=alert(1)>')).toBeVisible();
+  await expect(log.getByText(text)).toBeVisible();
   await expect(page.locator('img[src="x"]')).toHaveCount(0);
   await page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
@@ -45,14 +47,20 @@ test('node chat: attachment needs a caption, uploads, then shows as a thumbnail'
     'base64',
   );
   await dialog.locator('input[type="file"]').setInputFiles({ name: 'dot.png', mimeType: 'image/png', buffer: png });
-  await expect(dialog.getByRole('button', { name: 'Send' })).toBeDisabled();
-  await dialog.getByLabel('Caption for dot.png').fill('A single dot');
-  await dialog.getByRole('button', { name: 'Send' }).click();
-  await expect(dialog.getByRole('button', { name: 'Enlarge image: A single dot' })).toBeVisible();
-  await dialog.getByRole('button', { name: 'Enlarge image: A single dot' }).click();
-  await expect(page.getByRole('dialog', { name: 'Image 1 of 1' })).toBeVisible();
+  // "Send" alone also matches "Pause this session's sends".
+  const send = dialog.getByRole('button', { name: 'Send', exact: true });
+  await expect(send).toBeDisabled();
+  // Unique per run: the mock feed keeps earlier runs' images in this thread.
+  const caption = `A single dot ${Date.now()}`;
+  await dialog.getByLabel('Caption for dot.png').fill(caption);
+  await send.click();
+  const thumb = dialog.getByRole('button', { name: `Enlarge image: ${caption}` });
+  await expect(thumb).toBeVisible();
+  await thumb.click();
+  const viewer = page.getByRole('dialog', { name: /^Image \d+ of \d+$/ });
+  await expect(viewer).toBeVisible();
   await page.keyboard.press('Escape');
-  await expect(page.getByRole('dialog', { name: 'Image 1 of 1' })).toBeHidden();
+  await expect(viewer).toBeHidden();
   await expect(dialog).toBeVisible();
 });
 

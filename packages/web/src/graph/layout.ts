@@ -36,6 +36,8 @@ export interface LayoutParams {
   readonly centerStrength: number;
   /** Velocity decay. */
   readonly velocityDecay: number;
+  /** Alpha below which the simulation stops; higher cuts the slow-drift tail of each warm-up. */
+  readonly alphaMin: number;
   /** alphaTarget held after a weight change. */
   readonly warmAlphaTarget: number;
   /** How long the warm alphaTarget is held, in ms. */
@@ -52,6 +54,10 @@ export interface LayoutParams {
  * strength 0.15 (from 0.3) so cross-repo threads stop dragging nodes into
  * other repos' hulls, and collision on each node's footprint, circle plus
  * labels, 6 px apart, instead of a 48 px circle, so labels never overlap.
+ * For stillness under steady traffic, a weight change warms the layout only
+ * when it moves a link's target length by 48 px (from 8), the warm-up is
+ * gentler and shorter (alphaTarget 0.03 for 1 s, from 0.05 for 2 s), and the
+ * simulation stops at alpha 0.005 (from d3's 0.001) instead of crawling.
  */
 export const LAYOUT: LayoutParams = Object.freeze({
   linkDistanceMax: 320,
@@ -65,9 +71,10 @@ export const LAYOUT: LayoutParams = Object.freeze({
   manyBodyStrength: -300,
   centerStrength: 0.02,
   velocityDecay: 0.6,
-  warmAlphaTarget: 0.05,
-  warmMs: 2_000,
-  distanceChangePx: 8,
+  alphaMin: 0.005,
+  warmAlphaTarget: 0.03,
+  warmMs: 1_000,
+  distanceChangePx: 48,
   entryJitter: 12,
 });
 
@@ -284,6 +291,7 @@ export class GraphLayout {
       .strength(p.linkStrength);
     this.sim = forceSimulation<LayoutNode, LayoutLink>([])
       .velocityDecay(p.velocityDecay)
+      .alphaMin(p.alphaMin)
       .force('link', this.linkForce)
       .force('group', forceGroups(p.groupStrength))
       .force('charge', forceManyBody<LayoutNode>().strength(p.manyBodyStrength))

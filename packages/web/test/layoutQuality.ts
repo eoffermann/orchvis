@@ -4,7 +4,7 @@ import { seededRandom } from '../src/dev/fakeFeed';
 import { nodeFootprint } from '../src/graph/footprint';
 import { paddedHull, type Point } from '../src/graph/hull';
 import { GraphLayout, type LayoutParams } from '../src/graph/layout';
-import { fitTransform, bounds } from '../src/graph/viewport';
+import { AutoFit, bounds, fitTransform, transformAttr } from '../src/graph/viewport';
 
 /*
  * Layout quality harness: drives GraphLayout headlessly through a fleet's
@@ -149,6 +149,12 @@ export interface RunResult {
   p95Step: number;
   /** Frames until the first layout cooled below alphaMin. */
   settleFrames: number;
+  /**
+   * Fraction of traffic frames that draw exactly what the previous frame
+   * drew, camera included, on a 1920 × 1080 screen: the graph is at rest
+   * and a node is a still click target.
+   */
+  stillFraction: number;
 }
 
 const FRAME_MS = 1000 / 60;
@@ -202,6 +208,9 @@ export function runScenario(scenario: Scenario, opts: RunOptions): RunResult {
   let nextMessage = now + expDelay(random, opts.rate);
   const end = now + trafficMs;
   let frame = 0;
+  let stillFrames = 0;
+  const fit = new AutoFit();
+  let lastView = '';
   while (now < end) {
     const before = new Map(scenario.nodes.map((n) => [n.id, { x: layout.node(n.id)!.x, y: layout.node(n.id)!.y }]));
     now += FRAME_MS;
@@ -214,11 +223,17 @@ export function runScenario(scenario: Scenario, opts: RunOptions): RunResult {
     }
     if (changed || frame % 60 === 0) push(now);
     layout.tick(now);
+    let drawnMoved = false;
     for (const n of scenario.nodes) {
       const p = layout.node(n.id)!;
       const b = before.get(n.id)!;
       travelled += Math.hypot(p.x - b.x, p.y - b.y);
+      // GraphView writes positions to 0.1 px.
+      if (p.x.toFixed(1) !== b.x.toFixed(1) || p.y.toFixed(1) !== b.y.toFixed(1)) drawnMoved = true;
     }
+    const view = transformAttr(fit.step(bounds(layout.allNodes()), 1920, 1080));
+    if (!drawnMoved && view === lastView) stillFrames++;
+    lastView = view;
     if (frame % 60 === 0) {
       for (const n of scenario.nodes) {
         const p = layout.node(n.id)!;
@@ -238,6 +253,7 @@ export function runScenario(scenario: Scenario, opts: RunOptions): RunResult {
     worst,
     meanSpeed: travelled / scenario.nodes.length / (trafficMs / 1000),
     p95Step: steps[Math.floor(steps.length * 0.95)] ?? 0,
+    stillFraction: stillFrames / frame,
     settleFrames,
   };
 }

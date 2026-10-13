@@ -9,7 +9,7 @@ import { GraphLayout } from './layout';
 import { buildGraphModel, type GraphModel } from './model';
 import { HaloSystem, PulseSystem } from './pulses';
 import { useRefMap } from './useRefMap';
-import { bounds, fitTransform, lerpTransform, type ViewTransform } from './viewport';
+import { AutoFit, bounds, transformAttr } from './viewport';
 import { HALO_COLOR, PULSE_COLOR, PULSE_MEDIA_COLOR, STATUS_COLORS, displayedEdgeOpacity, edgeWidth } from './visual';
 
 /** Minimum hit target size on screen, in CSS px. */
@@ -72,7 +72,7 @@ export function GraphView({ onSelect }: GraphViewProps) {
   const viewportRef = useRef<SVGGElement | null>(null);
   const pulseLayerRef = useRef<SVGGElement | null>(null);
   const sizeRef = useRef({ width: 0, height: 0 });
-  const viewRef = useRef<ViewTransform>({ x: 0, y: 0, scale: 1 });
+  const autoFitRef = useRef(new AutoFit());
   const pressRef = useRef<PressState | null>(null);
   const lastTapRef = useRef<{ id: string; time: number } | null>(null);
 
@@ -143,6 +143,10 @@ export function GraphView({ onSelect }: GraphViewProps) {
     let raf = 0;
     let lastScale = Number.NaN;
     let lastModel: GraphModel | null = null;
+    // What the positions below were last written for. Rewriting unchanged
+    // attributes still invalidates paint, so a still graph writes nothing.
+    let drawnModel: GraphModel | null = null;
+    let drawnTransform = '';
     const pulseEls: SVGCircleElement[] = [];
     const frame = () => {
       raf = requestAnimationFrame(frame);
@@ -150,16 +154,20 @@ export function GraphView({ onSelect }: GraphViewProps) {
       const layout = layoutRef.current;
       const viewport = viewportRef.current;
       if (!layout || !viewport) return;
-      layout.tick(now);
+      const moved = layout.tick(now);
       const m = modelRef.current;
 
       // Auto-fit, frozen while a node is being dragged so it stays under the finger.
-      if (!pressRef.current?.dragging) {
-        const target = fitTransform(bounds(layout.allNodes()), sizeRef.current.width, sizeRef.current.height);
-        viewRef.current = Number.isNaN(lastScale) ? target : lerpTransform(viewRef.current, target, 0.08);
+      const fit = autoFitRef.current;
+      if (pressRef.current?.dragging) fit.hold();
+      else fit.step(bounds(layout.allNodes()), sizeRef.current.width, sizeRef.current.height);
+      const v = fit.current() ?? { x: 0, y: 0, scale: 1 };
+      const transform = transformAttr(v);
+      const viewChanged = transform !== drawnTransform;
+      if (viewChanged) {
+        viewport.setAttribute('transform', transform);
+        drawnTransform = transform;
       }
-      const v = viewRef.current;
-      viewport.setAttribute('transform', `translate(${v.x.toFixed(2)},${v.y.toFixed(2)}) scale(${v.scale.toFixed(4)})`);
       const inv = 1 / v.scale;
       if (Math.abs(v.scale - lastScale) > 0.005 || m !== lastModel) {
         // Keep hit targets at their screen size whatever the zoom, including
@@ -171,46 +179,49 @@ export function GraphView({ onSelect }: GraphViewProps) {
         for (const el of edgeHitEls.map.values()) el.setAttribute('stroke-width', (EDGE_HIT_PX * inv).toFixed(1));
       }
 
-      for (const [id, el] of nodeEls.map) {
-        const n = layout.node(id);
-        if (n) el.setAttribute('transform', `translate(${n.x.toFixed(1)},${n.y.toFixed(1)})`);
-      }
-
-      for (const e of m.edges) {
-        const a = layout.node(e.a);
-        const b = layout.node(e.b);
-        if (!a || !b) continue;
-        for (const el of [edgeLineEls.map.get(e.threadId), edgeHitEls.map.get(e.threadId)]) {
-          if (!el) continue;
-          el.setAttribute('x1', a.x.toFixed(1));
-          el.setAttribute('y1', a.y.toFixed(1));
-          el.setAttribute('x2', b.x.toFixed(1));
-          el.setAttribute('y2', b.y.toFixed(1));
-        }
-        const icon = iconEls.map.get(e.threadId);
-        if (icon) {
-          icon.setAttribute(
-            'transform',
-            `translate(${((a.x + b.x) / 2).toFixed(1)},${((a.y + b.y) / 2).toFixed(1)}) scale(${inv.toFixed(4)})`,
-          );
-        }
-      }
-
-      for (const g of m.groups) {
-        const path = hullPathEls.map.get(g.key);
-        if (!path) continue;
-        const pts: Point[] = [];
-        for (const id of g.members) {
+      if (moved || viewChanged || m !== drawnModel) {
+        drawnModel = m;
+        for (const [id, el] of nodeEls.map) {
           const n = layout.node(id);
-          if (n) pts.push([n.x, n.y]);
+          if (n) el.setAttribute('transform', `translate(${n.x.toFixed(1)},${n.y.toFixed(1)})`);
         }
-        const hull = paddedHull(pts);
-        path.setAttribute('d', hullPath(hull));
-        const top = hullTop(hull);
-        const label = hullLabelEls.map.get(g.key);
-        if (label && top) {
-          label.setAttribute('x', top[0].toFixed(1));
-          label.setAttribute('y', (top[1] - 8).toFixed(1));
+
+        for (const e of m.edges) {
+          const a = layout.node(e.a);
+          const b = layout.node(e.b);
+          if (!a || !b) continue;
+          for (const el of [edgeLineEls.map.get(e.threadId), edgeHitEls.map.get(e.threadId)]) {
+            if (!el) continue;
+            el.setAttribute('x1', a.x.toFixed(1));
+            el.setAttribute('y1', a.y.toFixed(1));
+            el.setAttribute('x2', b.x.toFixed(1));
+            el.setAttribute('y2', b.y.toFixed(1));
+          }
+          const icon = iconEls.map.get(e.threadId);
+          if (icon) {
+            icon.setAttribute(
+              'transform',
+              `translate(${((a.x + b.x) / 2).toFixed(1)},${((a.y + b.y) / 2).toFixed(1)}) scale(${inv.toFixed(4)})`,
+            );
+          }
+        }
+
+        for (const g of m.groups) {
+          const path = hullPathEls.map.get(g.key);
+          if (!path) continue;
+          const pts: Point[] = [];
+          for (const id of g.members) {
+            const n = layout.node(id);
+            if (n) pts.push([n.x, n.y]);
+          }
+          const hull = paddedHull(pts);
+          path.setAttribute('d', hullPath(hull));
+          const top = hullTop(hull);
+          const label = hullLabelEls.map.get(g.key);
+          if (label && top) {
+            label.setAttribute('x', top[0].toFixed(1));
+            label.setAttribute('y', (top[1] - 8).toFixed(1));
+          }
         }
       }
 
@@ -231,14 +242,15 @@ export function GraphView({ onSelect }: GraphViewProps) {
           const a = p ? layout.node(p.from) : undefined;
           const b = p ? layout.node(p.to) : undefined;
           if (!p || !a || !b) {
-            el.setAttribute('visibility', 'hidden');
+            if (el.getAttribute('visibility') !== 'hidden') el.setAttribute('visibility', 'hidden');
             continue;
           }
           const t = p.t < 0.5 ? 2 * p.t * p.t : 1 - (-2 * p.t + 2) ** 2 / 2;
-          el.setAttribute('visibility', 'visible');
+          if (el.getAttribute('visibility') !== 'visible') el.setAttribute('visibility', 'visible');
           el.setAttribute('cx', (a.x + (b.x - a.x) * t).toFixed(1));
           el.setAttribute('cy', (a.y + (b.y - a.y) * t).toFixed(1));
-          el.setAttribute('fill', p.media ? PULSE_MEDIA_COLOR : PULSE_COLOR);
+          const fill = p.media ? PULSE_MEDIA_COLOR : PULSE_COLOR;
+          if (el.getAttribute('fill') !== fill) el.setAttribute('fill', fill);
         }
       }
 
@@ -364,6 +376,42 @@ export function GraphView({ onSelect }: GraphViewProps) {
           })}
         </g>
         <g ref={pulseLayerRef} className="layer-pulses" />
+        {/* Media icons sit under the nodes: where one overlaps a node, the node takes the click. */}
+        <g className="layer-media">
+          {model.edges.map((e) =>
+            e.media.length === 0 || !e.matches ? null : (
+              <g key={e.threadId} ref={iconEls.ref(e.threadId)} className="edge-media">
+                {e.media.map((m, i) => (
+                  <g
+                    key={m.kind}
+                    className={`media-icon media-icon--${m.kind}`}
+                    transform={`translate(${(i - (e.media.length - 1) / 2) * MIN_HIT_PX},0)`}
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`Browse ${m.count} ${MEDIA_LABELS[m.kind]}`}
+                    onKeyDown={onActivateKey(() => select({ kind: 'media', threadId: e.threadId, mediaKind: m.kind }))}
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      select({ kind: 'media', threadId: e.threadId, mediaKind: m.kind });
+                    }}
+                  >
+                    <title>
+                      {m.count} {MEDIA_LABELS[m.kind]}
+                    </title>
+                    <rect className="media-hit" x={-MIN_HIT_PX / 2} y={-MIN_HIT_PX / 2} width={MIN_HIT_PX} height={MIN_HIT_PX} />
+                    <circle className="media-badge" r={13} />
+                    <text className="media-glyph" textAnchor="middle" dy="0.35em">
+                      {MEDIA_GLYPHS[m.kind]}
+                    </text>
+                    <text className="media-count" x={12} y={-10} textAnchor="middle">
+                      {m.count}
+                    </text>
+                  </g>
+                ))}
+              </g>
+            ),
+          )}
+        </g>
         <g className="layer-nodes">
           {model.nodes.map((n) => {
             const s = n.session;
@@ -427,41 +475,6 @@ export function GraphView({ onSelect }: GraphViewProps) {
               {g.name}
             </text>
           ))}
-        </g>
-        <g className="layer-media">
-          {model.edges.map((e) =>
-            e.media.length === 0 || !e.matches ? null : (
-              <g key={e.threadId} ref={iconEls.ref(e.threadId)} className="edge-media">
-                {e.media.map((m, i) => (
-                  <g
-                    key={m.kind}
-                    className={`media-icon media-icon--${m.kind}`}
-                    transform={`translate(${(i - (e.media.length - 1) / 2) * MIN_HIT_PX},0)`}
-                    tabIndex={0}
-                    role="button"
-                    aria-label={`Browse ${m.count} ${MEDIA_LABELS[m.kind]}`}
-                    onKeyDown={onActivateKey(() => select({ kind: 'media', threadId: e.threadId, mediaKind: m.kind }))}
-                    onClick={(ev) => {
-                      ev.stopPropagation();
-                      select({ kind: 'media', threadId: e.threadId, mediaKind: m.kind });
-                    }}
-                  >
-                    <title>
-                      {m.count} {MEDIA_LABELS[m.kind]}
-                    </title>
-                    <rect className="media-hit" x={-MIN_HIT_PX / 2} y={-MIN_HIT_PX / 2} width={MIN_HIT_PX} height={MIN_HIT_PX} />
-                    <circle className="media-badge" r={13} />
-                    <text className="media-glyph" textAnchor="middle" dy="0.35em">
-                      {MEDIA_GLYPHS[m.kind]}
-                    </text>
-                    <text className="media-count" x={12} y={-10} textAnchor="middle">
-                      {m.count}
-                    </text>
-                  </g>
-                ))}
-              </g>
-            ),
-          )}
         </g>
       </g>
     </svg>

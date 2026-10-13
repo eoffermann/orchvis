@@ -1,5 +1,5 @@
 import react from '@vitejs/plugin-react';
-import { defineConfig } from 'vite';
+import { defineConfig, type ProxyOptions } from 'vite';
 
 /**
  * Vite config for the orchvis web app. The production build lands in
@@ -15,25 +15,27 @@ import { defineConfig } from 'vite';
  */
 const target = process.env.ORCHVIS_BROKER ?? 'http://127.0.0.1:7811';
 
-export default defineConfig({
-  plugins: [react()],
-  server: {
-    proxy: {
-      '/api': { target, changeOrigin: true },
-      '/ws': {
-        target,
-        ws: true,
-        changeOrigin: true,
-        // The browser sends the dev server's Origin; present the target's own
-        // so a real broker's Origin check passes, as it would in production.
-        configure: (proxy) => {
-          proxy.on('proxyReqWs', (proxyReq) => {
-            proxyReq.setHeader('origin', new URL(target).origin);
-          });
-        },
-      },
+/** Same-origin proxy for dev and for `vite preview` (the production build, used by the layout check). */
+const proxy: Record<string, ProxyOptions> = {
+  '/api': { target, changeOrigin: true },
+  '/ws': {
+    target,
+    ws: true,
+    changeOrigin: true,
+    // The browser sends the dev server's Origin; present the target's own
+    // so a real broker's Origin check passes, as it would in production.
+    configure: (p) => {
+      p.on('proxyReqWs', (proxyReq) => {
+        proxyReq.setHeader('origin', new URL(target).origin);
+      });
     },
   },
+};
+
+export default defineConfig({
+  plugins: [react()],
+  server: { proxy },
+  preview: { proxy },
   build: {
     outDir: 'dist',
     sourcemap: true,

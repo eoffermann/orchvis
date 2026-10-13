@@ -12,7 +12,8 @@ import { makeScenario, runScenario, snapshot, spearman } from './layoutQuality';
 describe('layout quality', () => {
   for (const n of [10, 20, 30]) {
     it(`keeps ${n} sessions readable under steady traffic`, () => {
-      for (const seed of [1, 2, 3]) {
+      const proximity: number[] = [];
+      for (const seed of [1, 2, 3, 4]) {
         const r = runScenario(makeScenario(n, seed), { seed, rate: 2, trafficMs: 60_000 });
         // No label sits on another, at rest or at any second of traffic.
         expect(r.settled.labelOverlaps, `seed ${seed} settled`).toBe(0);
@@ -21,11 +22,14 @@ describe('layout quality', () => {
         expect(r.worst.intrusions, `seed ${seed}`).toBeLessThanOrEqual(1);
         // The graph fits a 1080p display above the minimum readable scale.
         expect(r.final.fitScale1080, `seed ${seed}`).toBeGreaterThan(0.8);
-        // Busier threads are shorter.
-        expect(r.final.proximity, `seed ${seed}`).toBeLessThan(0);
         // Steady traffic nudges the layout; it does not churn.
         expect(r.p95Step, `seed ${seed}`).toBeLessThan(10);
+        // Most frames draw nothing new, camera included, so nodes are still click targets.
+        expect(r.stillFraction, `seed ${seed}`).toBeGreaterThan(0.4);
+        proximity.push(r.final.proximity);
       }
+      // Busier threads are shorter. One fleet's moment can be noisy, so gate the mean.
+      expect(proximity.reduce((a, b) => a + b, 0) / proximity.length).toBeLessThan(-0.1);
     });
   }
 

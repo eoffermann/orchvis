@@ -10,11 +10,15 @@ export const NAME_BASELINE = NODE_RADIUS + 18;
 /** Baseline of the host label below the node center, in layout px. */
 export const HOST_BASELINE = NODE_RADIUS + 34;
 
-/** Average glyph width of the name label (0.95rem, weight 600), in px per character. */
-const NAME_PX_PER_CHAR = 15.2 * 0.6;
+/**
+ * Glyph width of the name label (0.95rem, weight 600), in px per character:
+ * a little over the widest average measured in Chromium, so the estimate
+ * covers the drawn text (e2e/layout.check.ts checks it).
+ */
+const NAME_PX_PER_CHAR = 15.2 * 0.66;
 
-/** Average glyph width of the host label (0.75rem), in px per character. */
-const HOST_PX_PER_CHAR = 12 * 0.55;
+/** Glyph width of the host label (0.75rem), in px per character, likewise. */
+const HOST_PX_PER_CHAR = 12 * 0.61;
 
 /**
  * The box a node occupies on screen, relative to its center: the circle (and
