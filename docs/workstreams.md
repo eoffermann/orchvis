@@ -17,6 +17,8 @@ How the Orchestration Visualizer build is split between two coordinating Claude 
 
 If S3–S5 run long, b2corcviz-98 may hand WP6 to OrcViz2 once S2 is done, with notice first.
 
+On 2026-10-13 the Owner moved the WP9 real-time soak run (`packages/broker/scripts/soak.ts`) to b2corcviz-98. The soak code stays as OrcViz2 wrote it. The end-to-end matrix is on hold until the Owner approves it.
+
 `H:/b2cOrcViz` stays on `main` and is touched only to merge. Neither owner edits the other's packages; ask the owner instead.
 
 ## Order
