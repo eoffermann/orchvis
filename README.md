@@ -336,8 +336,8 @@ pnpm --filter @orchvis/web dev
 
 orchvis v1 is in active development.
 
-- **Working:** the protocol; the broker, including Owner login with a session cookie, media upload and download with captions and a 45-minute lifetime, rate limits, mute and pause, and the web app served at `/` under a strict CSP; the shim and its tools; the plugin with its skills, launchers, setup and poll-mode hooks; the web graph and overlays; the simulator; the runbook.
-- **In progress:** the cross-platform end-to-end matrix (Windows↔Windows and Windows↔macOS, push and poll), soak testing, and layout tuning.
+- **Working:** the protocol; the broker, including Owner login with a session cookie, media upload and download with captions and a 45-minute lifetime, rate limits, mute and pause, and the web app served at `/` under a strict CSP; the shim and its tools; the plugin with its skills, launchers, setup and poll-mode hooks; the web graph and overlays, with a layout tuned for 10 to 30 sessions (labels never overlap, and the graph holds still under steady traffic); the simulator; the runbook.
+- **In progress:** the cross-platform end-to-end matrix (Windows↔Windows and Windows↔macOS, push and poll), soak testing, and confirming 60 fps at 30 sessions on a display with a GPU.
 - **Channels are a Claude Code research preview.** Push delivery needs `--dangerously-load-development-channels` (the launchers add it), Claude Code shows an experimental-channels banner at each launch, and the channel contract may change. All channel-specific shim code is in one module for that reason. Poll mode works without channels.
 - **LAN only.** v1 uses plain HTTP and WebSocket. Remote workers would need TLS and per-shim tokens.
 - **Ephemeral by design.** No message history, search or audit log survives a broker restart, and media expires after 45 minutes.
