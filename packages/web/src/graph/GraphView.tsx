@@ -3,6 +3,7 @@ import type { MediaKind } from '@orchvis/protocol';
 import { formatAgo } from '../overlays/model';
 import type { Selection } from '../store/types';
 import { useAppState, useStoreInstance } from '../store/useStore';
+import { HOST_BASELINE, NAME_BASELINE, NODE_RADIUS, hostLabel, nodeFootprint } from './footprint';
 import { hullPath, hullTop, paddedHull, type Point } from './hull';
 import { GraphLayout } from './layout';
 import { buildGraphModel, type GraphModel } from './model';
@@ -10,9 +11,6 @@ import { HaloSystem, PulseSystem } from './pulses';
 import { useRefMap } from './useRefMap';
 import { bounds, fitTransform, lerpTransform, type ViewTransform } from './viewport';
 import { HALO_COLOR, PULSE_COLOR, PULSE_MEDIA_COLOR, STATUS_COLORS, displayedEdgeOpacity, edgeWidth } from './visual';
-
-/** Visible node radius, in layout px. */
-export const NODE_RADIUS = 20;
 
 /** Minimum hit target size on screen, in CSS px. */
 export const MIN_HIT_PX = 44;
@@ -97,7 +95,7 @@ export function GraphView({ onSelect }: GraphViewProps) {
   // Keep the simulation in step with the graph and the decayed weights.
   useEffect(() => {
     layoutRef.current?.update(
-      model.nodes.map((n) => ({ id: n.id, groups: n.groups })),
+      model.nodes.map((n) => ({ id: n.id, groups: n.groups, footprint: nodeFootprint(n.session.name, hostLabel(n.session, state.now)) })),
       model.edges.map((e) => ({ id: e.threadId, source: e.a, target: e.b, weight: e.weight })),
       performance.now(),
     );
@@ -398,11 +396,11 @@ export function GraphView({ onSelect }: GraphViewProps) {
                 <circle className="node-hit" r={MIN_HIT_PX / 2 + 4} />
                 <circle className="node-body" r={NODE_RADIUS} />
                 <circle className="node-ring" r={NODE_RADIUS} stroke={STATUS_COLORS[s.status]} />
-                <text className="node-name" y={NODE_RADIUS + 18} textAnchor="middle">
+                <text className="node-name" y={NAME_BASELINE} textAnchor="middle">
                   {s.name}
                 </text>
-                <text className="node-host" y={NODE_RADIUS + 34} textAnchor="middle">
-                  {s.connected ? s.hostname : `${s.hostname} · last seen ${formatAgo(state.now - s.lastSeen)}`}
+                <text className="node-host" y={HOST_BASELINE} textAnchor="middle">
+                  {hostLabel(s, state.now)}
                 </text>
                 {s.delivery === 'poll' && (
                   <g className="node-badge" transform={`translate(${NODE_RADIUS - 4},${-NODE_RADIUS + 4})`}>

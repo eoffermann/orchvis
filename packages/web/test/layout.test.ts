@@ -23,10 +23,11 @@ describe('linkDistance', () => {
 });
 
 describe('layout constants', () => {
-  it('match the plan', () => {
-    expect(LAYOUT.linkStrength).toBe(0.3);
+  it('match the plan, as tuned', () => {
+    expect(LAYOUT.linkStrength).toBe(0.15);
     expect(LAYOUT.groupStrength).toBe(0.08);
     expect(LAYOUT.collideRadius).toBe(48);
+    expect(LAYOUT.collidePadding).toBe(6);
     expect(LAYOUT.manyBodyStrength).toBe(-300);
     expect(LAYOUT.velocityDecay).toBe(0.6);
     expect(LAYOUT.warmAlphaTarget).toBe(0.05);
