@@ -64,10 +64,115 @@ export function hullPath(hull: readonly Point[] | null): string {
   return `${d}Z`;
 }
 
-/** Topmost point of a hull, for its label. Null for no hull. */
+/** Topmost point of a hull. Null for no hull. */
 export function hullTop(hull: readonly Point[] | null): Point | null {
   if (!hull || hull.length === 0) return null;
   let top = hull[0] as Point;
   for (const p of hull) if (p[1] < top[1]) top = p;
   return top;
+}
+
+/** An axis-aligned box in layout px. */
+export interface Box {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/** Repo label font size in px (`.hull-label`: 1rem, weight 600). */
+export const HULL_LABEL_FONT_PX = 16;
+
+/** Estimated advance per character of a repo label, in px; covers Chromium's rendering with a margin. */
+const HULL_LABEL_PX_PER_CHAR = HULL_LABEL_FONT_PX * 0.6;
+
+/** Gap between a hull's edge and its label, in px. */
+const HULL_LABEL_GAP = 6;
+
+/** Extra distance of the second, farther ring of label candidates, in px. */
+const HULL_LABEL_FAR = 40;
+
+/** Estimated half size of a repo label's drawn text. */
+export function hullLabelHalfSize(name: string): { halfWidth: number; halfHeight: number } {
+  return { halfWidth: (name.length * HULL_LABEL_PX_PER_CHAR) / 2 + 2, halfHeight: HULL_LABEL_FONT_PX * 0.6 };
+}
+
+/** Where a repo label is drawn: its center, and the outward angle it was placed at. */
+export interface HullLabelPlacement {
+  x: number;
+  y: number;
+  angle: number;
+  box: Box;
+}
+
+/** Area two boxes share beyond a 1 px tolerance on each axis; 0 when they only touch. */
+function overlapArea(a: Box, b: Box): number {
+  const ox = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+  const oy = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+  return ox > 1 && oy > 1 ? ox * oy : 0;
+}
+
+function angleGap(a: number, b: number): number {
+  const d = Math.abs(a - b) % (2 * Math.PI);
+  return d > Math.PI ? 2 * Math.PI - d : d;
+}
+
+/**
+ * Places a repo label just outside its hull where it covers no node and no
+ * label already placed. Repo labels draw above the nodes, so the topmost spot
+ * alone can hide a node's name where hulls overlap.
+ *
+ * Candidates sit outside each hull vertex, pushed out from the hull's center
+ * far enough that the label box clears the vertex, then on a second ring
+ * farther out. The angle used last time (`previous`) is tried first, so a
+ * label does not hop while its spot stays clear; then the candidates go from
+ * the top of the hull down. If nothing is clear, the label takes the spot it
+ * covers least.
+ */
+export function placeHullLabel(
+  hull: readonly Point[] | null,
+  size: { halfWidth: number; halfHeight: number },
+  obstacles: readonly Box[],
+  previous?: number,
+): HullLabelPlacement | null {
+  if (!hull || hull.length === 0) return null;
+  let cx = 0;
+  let cy = 0;
+  for (const [x, y] of hull) {
+    cx += x;
+    cy += y;
+  }
+  cx /= hull.length;
+  cy /= hull.length;
+  const at = ([vx, vy]: Point, extra: number): HullLabelPlacement => {
+    const len = Math.hypot(vx - cx, vy - cy) || 1;
+    const dx = (vx - cx) / len;
+    const dy = (vy - cy) / len;
+    const push = Math.abs(dx) * size.halfWidth + Math.abs(dy) * size.halfHeight + HULL_LABEL_GAP + extra;
+    const x = vx + dx * push;
+    const y = vy + dy * push;
+    const box = { left: x - size.halfWidth, right: x + size.halfWidth, top: y - size.halfHeight, bottom: y + size.halfHeight };
+    return { x, y, angle: Math.atan2(dy, dx), box };
+  };
+  const byHeight = [...hull].sort((a, b) => a[1] - b[1]);
+  const candidates = [...byHeight.map((v) => at(v, 0)), ...byHeight.map((v) => at(v, HULL_LABEL_FAR))];
+  if (previous !== undefined) {
+    let nearest = candidates[0] as HullLabelPlacement;
+    for (const c of candidates.slice(0, byHeight.length)) {
+      if (angleGap(c.angle, previous) < angleGap(nearest.angle, previous)) nearest = c;
+    }
+    candidates.unshift(nearest);
+  }
+  let best = candidates[0] as HullLabelPlacement;
+  let bestCover = Infinity;
+  for (const c of candidates) {
+    let cover = 0;
+    for (const o of obstacles) cover += overlapArea(c.box, o);
+    if (cover === 0) return c;
+    if (cover < bestCover) {
+      best = c;
+      bestCover = cover;
+    }
+  }
+  return best;
 }

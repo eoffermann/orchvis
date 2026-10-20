@@ -34,6 +34,11 @@ export interface Footprint {
   bottom: number;
 }
 
+/** A footprint placed at a node center, as a box in layout px. */
+export function footprintBox(x: number, y: number, f: Footprint): { left: number; top: number; right: number; bottom: number } {
+  return { left: x - f.halfWidth, right: x + f.halfWidth, top: y + f.top, bottom: y + f.bottom };
+}
+
 /** The host line under a node: hostname, plus when it was last seen if disconnected. */
 export function hostLabel(session: Pick<SessionNode, 'hostname' | 'connected' | 'lastSeen'>, now: number): string {
   return session.connected ? session.hostname : `${session.hostname} · last seen ${formatAgo(now - session.lastSeen)}`;

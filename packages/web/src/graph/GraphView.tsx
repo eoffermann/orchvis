@@ -3,8 +3,8 @@ import type { MediaKind } from '@orchvis/protocol';
 import { formatAgo } from '../overlays/model';
 import type { Selection } from '../store/types';
 import { useAppState, useStoreInstance } from '../store/useStore';
-import { HOST_BASELINE, NAME_BASELINE, NODE_RADIUS, hostLabel, nodeFootprint } from './footprint';
-import { hullPath, hullTop, paddedHull, type Point } from './hull';
+import { HOST_BASELINE, NAME_BASELINE, NODE_RADIUS, footprintBox, hostLabel, nodeFootprint } from './footprint';
+import { hullLabelHalfSize, hullPath, paddedHull, placeHullLabel, type Box, type Point } from './hull';
 import { GraphLayout } from './layout';
 import { buildGraphModel, type GraphModel } from './model';
 import { HaloSystem, PulseSystem } from './pulses';
@@ -148,6 +148,8 @@ export function GraphView({ onSelect }: GraphViewProps) {
     let drawnModel: GraphModel | null = null;
     let drawnTransform = '';
     const pulseEls: SVGCircleElement[] = [];
+    // Each repo label's last outward angle, so it stays put while its spot is clear.
+    const labelAngles = new Map<string, number>();
     const frame = () => {
       raf = requestAnimationFrame(frame);
       const now = performance.now();
@@ -206,6 +208,9 @@ export function GraphView({ onSelect }: GraphViewProps) {
           }
         }
 
+        // Repo labels go where they cover no node and no other repo label.
+        const obstacles: Box[] = [];
+        for (const n of layout.allNodes()) obstacles.push(footprintBox(n.x, n.y, n.footprint));
         for (const g of m.groups) {
           const path = hullPathEls.map.get(g.key);
           if (!path) continue;
@@ -216,12 +221,14 @@ export function GraphView({ onSelect }: GraphViewProps) {
           }
           const hull = paddedHull(pts);
           path.setAttribute('d', hullPath(hull));
-          const top = hullTop(hull);
           const label = hullLabelEls.map.get(g.key);
-          if (label && top) {
-            label.setAttribute('x', top[0].toFixed(1));
-            label.setAttribute('y', (top[1] - 8).toFixed(1));
-          }
+          if (!label || !g.matches) continue;
+          const spot = placeHullLabel(hull, hullLabelHalfSize(g.name), obstacles, labelAngles.get(g.key));
+          if (!spot) continue;
+          labelAngles.set(g.key, spot.angle);
+          obstacles.push(spot.box);
+          label.setAttribute('x', spot.x.toFixed(1));
+          label.setAttribute('y', spot.y.toFixed(1));
         }
       }
 
@@ -471,6 +478,7 @@ export function GraphView({ onSelect }: GraphViewProps) {
               className={g.matches ? 'hull-label' : 'hull-label hull--filtered'}
               fill={g.color}
               textAnchor="middle"
+              dominantBaseline="central"
             >
               {g.name}
             </text>

@@ -18,6 +18,9 @@ describe('layout quality', () => {
         // No label sits on another, at rest or at any second of traffic.
         expect(r.settled.labelOverlaps, `seed ${seed} settled`).toBe(0);
         expect(r.worst.labelOverlaps, `seed ${seed} traffic`).toBeLessThanOrEqual(1);
+        // Repo names never cover a session's labels or each other.
+        expect(r.settled.repoLabelOverlaps, `seed ${seed} settled`).toBe(0);
+        expect(r.worst.repoLabelOverlaps, `seed ${seed} traffic`).toBe(0);
         // Sessions stay out of other repos' hulls.
         expect(r.worst.intrusions, `seed ${seed}`).toBeLessThanOrEqual(1);
         // The graph fits a 1080p display above the minimum readable scale.
