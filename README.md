@@ -2,6 +2,8 @@
 
 # orchvis
 
+> **Project page:** [OrcVis](https://bigblueceiling.com/projects/orchvis/) on [Big Blue Ceiling](https://bigblueceiling.com/)
+
 **The Orchestration Visualizer: a message bus for Claude Code sessions, with a live map you can steer.**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
