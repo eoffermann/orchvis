@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { HULL_PADDING, hashString, hullPath, hullTop, paddedHull, repoColor } from '../src/graph/hull';
+import {
+  HULL_PADDING,
+  hashString,
+  hullLabelHalfSize,
+  hullPath,
+  hullTop,
+  paddedHull,
+  placeHullLabel,
+  repoColor,
+  type Box,
+} from '../src/graph/hull';
 
 describe('hashString and repoColor', () => {
   it('is stable and deterministic', () => {
@@ -70,5 +80,35 @@ describe('hullPath and hullTop', () => {
     expect(d.endsWith('Z')).toBe(true);
     expect(hullPath(null)).toBe('');
     expect(hullTop(hull)![1]).toBeCloseTo(-HULL_PADDING, 6);
+  });
+});
+
+describe('placeHullLabel', () => {
+  const hull = paddedHull([[0, 0], [200, 0]])!;
+  const size = hullLabelHalfSize('storefront-web');
+  const covers = (a: Box, b: Box) =>
+    Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1;
+
+  it('puts the label above the hull when nothing is in the way', () => {
+    const spot = placeHullLabel(hull, size, [])!;
+    expect(spot.box.bottom).toBeLessThanOrEqual(-HULL_PADDING);
+  });
+
+  it('moves the label off a node sitting above the hull', () => {
+    const node: Box = { left: -150, right: 350, top: -120, bottom: -40 };
+    const spot = placeHullLabel(hull, size, [node])!;
+    expect(covers(spot.box, node)).toBe(false);
+  });
+
+  it('keeps its previous side while that side stays clear', () => {
+    const below = placeHullLabel(hull, size, [{ left: -150, right: 350, top: -120, bottom: -40 }])!;
+    const again = placeHullLabel(hull, size, [], below.angle)!;
+    expect(again.angle).toBeCloseTo(below.angle, 6);
+  });
+
+  it('takes the least covered spot when every spot is covered', () => {
+    const wall: Box = { left: -1000, right: 1000, top: -1000, bottom: 1000 };
+    const spot = placeHullLabel(hull, size, [wall, { left: -150, right: 350, top: -120, bottom: -40 }])!;
+    expect(covers(spot.box, { left: -150, right: 350, top: -120, bottom: -40 })).toBe(false);
   });
 });

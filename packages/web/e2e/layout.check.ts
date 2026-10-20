@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { nodeFootprint } from '../src/graph/footprint';
+import { hullLabelHalfSize } from '../src/graph/hull';
 
 /*
  * P4 layout check (playwright.layout.config.ts): 30 simulated sessions at
@@ -40,21 +41,42 @@ async function drawnNodes(page: import('@playwright/test').Page): Promise<DrawnN
   );
 }
 
-function overlaps(nodes: DrawnNode[]): string[] {
+interface DrawnRepoLabel {
+  name: string;
+  box: DrawnNode['box'];
+  /** Rendered text width, in layout px. */
+  width: number;
+}
+
+async function drawnRepoLabels(page: import('@playwright/test').Page): Promise<DrawnRepoLabel[]> {
+  return page.evaluate(() =>
+    [...document.querySelectorAll<SVGTextElement>('text.hull-label:not(.hull--filtered)')].map((t) => {
+      const r = t.getBoundingClientRect();
+      return { name: t.textContent ?? '', box: { left: r.left, top: r.top, right: r.right, bottom: r.bottom }, width: t.getBBox().width };
+    }),
+  );
+}
+
+function overlaps(items: { name: string; box: DrawnNode['box'] }[]): string[] {
   const out: string[] = [];
-  for (let i = 0; i < nodes.length; i++) {
-    for (let j = i + 1; j < nodes.length; j++) {
-      const a = nodes[i]!.box;
-      const b = nodes[j]!.box;
+  for (let i = 0; i < items.length; i++) {
+    for (let j = i + 1; j < items.length; j++) {
+      const a = items[i]!.box;
+      const b = items[j]!.box;
       const ox = Math.min(a.right, b.right) - Math.max(a.left, b.left);
       const oy = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
-      if (ox > 1 && oy > 1) out.push(`${nodes[i]!.name} / ${nodes[j]!.name} (${ox.toFixed(0)}×${oy.toFixed(0)} px)`);
+      if (ox > 1 && oy > 1) out.push(`${items[i]!.name} / ${items[j]!.name} (${ox.toFixed(0)}×${oy.toFixed(0)} px)`);
     }
   }
   return out;
 }
 
-test('30 sessions: no label overlaps, frame rate, trace recorded', async ({ page, browser }, testInfo) => {
+/** Node labels and repo labels together; repo labels draw on top, so any overlap hides text. */
+async function allLabels(page: import('@playwright/test').Page): Promise<{ name: string; box: DrawnNode['box'] }[]> {
+  return [...(await drawnNodes(page)), ...(await drawnRepoLabels(page))];
+}
+
+test('30 sessions: no node or repo label overlaps, frame rate, trace recorded', async ({ page, browser }, testInfo) => {
   await page.goto('/');
   await page.getByLabel('Owner token').fill('mock');
   await page.getByRole('button', { name: 'Sign in' }).click();
@@ -75,6 +97,13 @@ test('30 sessions: no label overlaps, frame rate, trace recorded', async ({ page
         worstRatio = width / est;
         worstLabel = text;
       }
+    }
+  }
+  for (const r of await drawnRepoLabels(page)) {
+    const est = (hullLabelHalfSize(r.name).halfWidth - 2) * 2;
+    if (r.width / est > worstRatio) {
+      worstRatio = r.width / est;
+      worstLabel = r.name;
     }
   }
   testInfo.annotations.push({ type: 'rendered/estimated label width, worst', description: `${worstRatio.toFixed(2)} (${worstLabel})` });
@@ -99,7 +128,7 @@ test('30 sessions: no label overlaps, frame rate, trace recorded', async ({ page
   );
   const seen: string[] = [];
   for (let i = 0; i < 5; i++) {
-    seen.push(...overlaps(await drawnNodes(page)));
+    seen.push(...overlaps(await allLabels(page)));
     await page.waitForTimeout(2_000);
   }
   const fps = await frames;
@@ -108,6 +137,7 @@ test('30 sessions: no label overlaps, frame rate, trace recorded', async ({ page
   testInfo.annotations.push({ type: 'overlaps seen', description: String(seen.length) });
   console.log(`fps ${fps.toFixed(1)}, worst label width ratio ${worstRatio.toFixed(2)} (${worstLabel}), overlaps ${seen.length}`);
   for (const s of seen) console.log(`  overlap: ${s}`);
+  if (seen.length) await page.screenshot({ path: testInfo.outputPath('overlaps.png') });
 
   expect(worstRatio, 'rendered label wider than the layout estimate').toBeLessThanOrEqual(1);
   expect(seen).toEqual([]);
