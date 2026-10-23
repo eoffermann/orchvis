@@ -71,12 +71,57 @@ function overlaps(items: { name: string; box: DrawnNode['box'] }[]): string[] {
   return out;
 }
 
+/**
+ * What each thread's media icons draw (badges and counts), and what they
+ * must stay clear of: each node's circle, name and host line on their own,
+ * and each repo label.
+ */
+async function drawnMediaScene(page: import('@playwright/test').Page): Promise<{
+  icons: { name: string; box: DrawnNode['box'] }[];
+  others: { name: string; box: DrawnNode['box'] }[];
+}> {
+  return page.evaluate(() => {
+    const boxOf = (els: Element[]) => {
+      const rects = els.map((e) => e.getBoundingClientRect());
+      return {
+        left: Math.min(...rects.map((r) => r.left)),
+        top: Math.min(...rects.map((r) => r.top)),
+        right: Math.max(...rects.map((r) => r.right)),
+        bottom: Math.max(...rects.map((r) => r.bottom)),
+      };
+    };
+    const icons = [...document.querySelectorAll<SVGGElement>('g.edge-media')].map((g, i) => ({
+      name: `media icons ${i + 1}`,
+      box: boxOf([...g.querySelectorAll('.media-badge, .media-count')]),
+    }));
+    const others = [...document.querySelectorAll<SVGGElement>('g.node')].flatMap((g) => {
+      const name = g.querySelector('.node-name')?.textContent ?? '';
+      return ['.node-body', '.node-name', '.node-host'].map((s) => ({ name, box: boxOf([g.querySelector(s)!]) }));
+    });
+    for (const t of document.querySelectorAll<SVGTextElement>('text.hull-label:not(.hull--filtered)')) {
+      others.push({ name: t.textContent ?? '', box: boxOf([t]) });
+    }
+    return { icons, others };
+  });
+}
+
+/** Threads whose media icons cover a node's drawing, a repo label or another thread's icons. */
+async function mediaOverlaps(page: import('@playwright/test').Page): Promise<{ threads: number; covered: string[] }> {
+  const { icons, others } = await drawnMediaScene(page);
+  const covered: string[] = [];
+  icons.forEach((icon, i) => {
+    const hits = overlaps([icon, ...others, ...icons.filter((_, j) => j !== i)]).filter((s) => s.startsWith(`${icon.name} /`));
+    if (hits.length) covered.push(hits.join('; '));
+  });
+  return { threads: icons.length, covered };
+}
+
 /** Node labels and repo labels together; repo labels draw on top, so any overlap hides text. */
 async function allLabels(page: import('@playwright/test').Page): Promise<{ name: string; box: DrawnNode['box'] }[]> {
   return [...(await drawnNodes(page)), ...(await drawnRepoLabels(page))];
 }
 
-test('30 sessions: no node or repo label overlaps, frame rate, trace recorded', async ({ page, browser }, testInfo) => {
+test('30 sessions: no node or repo label overlaps, few media icon overlaps, frame rate, trace recorded', async ({ page, browser }, testInfo) => {
   await page.goto('/');
   await page.getByLabel('Owner token').fill('mock');
   await page.getByRole('button', { name: 'Sign in' }).click();
@@ -127,8 +172,13 @@ test('30 sessions: no node or repo label overlaps, frame rate, trace recorded', 
       }),
   );
   const seen: string[] = [];
+  let mediaThreads = 0;
+  let mediaCovered: string[] = [];
   for (let i = 0; i < 5; i++) {
     seen.push(...overlaps(await allLabels(page)));
+    const media = await mediaOverlaps(page);
+    mediaThreads = Math.max(mediaThreads, media.threads);
+    if (media.covered.length > mediaCovered.length) mediaCovered = media.covered;
     await page.waitForTimeout(2_000);
   }
   const fps = await frames;
@@ -137,10 +187,16 @@ test('30 sessions: no node or repo label overlaps, frame rate, trace recorded', 
   testInfo.annotations.push({ type: 'overlaps seen', description: String(seen.length) });
   console.log(`fps ${fps.toFixed(1)}, worst label width ratio ${worstRatio.toFixed(2)} (${worstLabel}), overlaps ${seen.length}`);
   for (const s of seen) console.log(`  overlap: ${s}`);
-  if (seen.length) await page.screenshot({ path: testInfo.outputPath('overlaps.png') });
+  testInfo.annotations.push({ type: 'media threads covered, worst sample', description: `${mediaCovered.length} of ${mediaThreads}` });
+  console.log(`media icons: ${mediaCovered.length} of ${mediaThreads} threads covered at worst`);
+  for (const s of mediaCovered) console.log(`  media overlap: ${s}`);
+  if (seen.length || mediaCovered.length) await page.screenshot({ path: testInfo.outputPath('overlaps.png') });
 
   expect(worstRatio, 'rendered label wider than the layout estimate').toBeLessThanOrEqual(1);
   expect(seen).toEqual([]);
+  expect(mediaThreads, 'the simulator sends media, so some threads carry icons').toBeGreaterThan(0);
+  // The layout quality harness gates the same: dense patches can leave no clear spot near an edge.
+  expect(mediaCovered.length).toBeLessThanOrEqual(Math.ceil(mediaThreads * 0.2));
   // Headless Chromium renders in software here (no GPU on the shared build
   // machine), and back-to-back runs vary from 47 to 56 fps, so this floor
   // catches gross regressions only. The plan's 60 fps gate needs a real
