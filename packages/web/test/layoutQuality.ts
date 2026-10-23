@@ -1,9 +1,10 @@
 import { bumpEdge, emptyEdge, weightAt, type EdgeWeightState } from '@orchvis/protocol';
 import { polygonContains } from 'd3-polygon';
 import { seededRandom } from '../src/dev/fakeFeed';
-import { footprintBox, nodeFootprint } from '../src/graph/footprint';
-import { hullLabelHalfSize, paddedHull, placeHullLabel, type Box, type Point } from '../src/graph/hull';
+import { footprintBox, nodeFootprint, nodeParts, type Box } from '../src/graph/footprint';
+import { hullLabelHalfSize, paddedHull, placeHullLabel, type Point } from '../src/graph/hull';
 import { GraphLayout, type LayoutParams } from '../src/graph/layout';
+import { mediaIconHalfSize, placeMediaIcons } from '../src/graph/mediaIcons';
 import { AutoFit, bounds, fitTransform, transformAttr } from '../src/graph/viewport';
 
 /*
@@ -31,6 +32,8 @@ export interface Scenario {
   nodes: ScenarioNode[];
   /** Conversation pairs, picked uniformly per message. */
   pairs: [string, string][];
+  /** Media icons drawn on a thread (one per media kind), by `a|b` key with a < b. */
+  media: Map<string, number>;
 }
 
 const REPOS = ['github.com/acme/orchestrator', 'github.com/acme/web-frontend', 'gitlab.com/acme/infra', 'github.com/acme/ml-pipeline'];
@@ -62,7 +65,16 @@ export function makeScenario(n: number, seed: number): Scenario {
     for (let k = 0; k < 2 && same.length > 0; k++) pairs.push([a.id, pick(same).id]);
     if (random() < 0.3) pairs.push([a.id, pick(nodes.filter((b) => b !== a)).id]);
   }
-  return { nodes, pairs };
+  // A third of the threads carry media, of one to three kinds.
+  const media = new Map<string, number>();
+  for (const [a, b] of pairs) {
+    if (random() < 1 / 3) media.set(edgeKey(a, b), 1 + Math.floor(random() * 3));
+  }
+  return { nodes, pairs, media };
+}
+
+function edgeKey(a: string, b: string): string {
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
 
 /** Readability and stability of one moment of a layout. */
@@ -75,6 +87,11 @@ export interface Snapshot {
   intrusions: number;
   /** Repo labels covering a node or another repo label, placed as GraphView places them. */
   repoLabelOverlaps: number;
+  /**
+   * Threads whose media icons cover a node, a repo label or another thread's
+   * icons, placed as GraphView places them at the 1080p auto-fit scale.
+   */
+  mediaIconOverlaps: number;
   /** Auto-fit scale on a 1920 × 1080 display (larger is more readable). */
   fitScale1080: number;
   /** Spearman rank correlation of edge weight against length (negative: heavy edges are shorter). */
@@ -87,6 +104,7 @@ export function snapshot(
   scenario: Scenario,
   weights: ReadonlyMap<string, number>,
   labelAngles?: Map<string, number>,
+  iconSpots?: Map<string, { t: number; side: number }>,
 ): Snapshot {
   const pos = scenario.nodes.map((n) => ({ n, p: layout.node(n.id)!, f: nodeFootprint(n.name, n.hostname) }));
   let labelOverlaps = 0;
@@ -108,6 +126,7 @@ export function snapshot(
   let intrusions = 0;
   let repoLabelOverlaps = 0;
   const obstacles: Box[] = pos.map((x) => footprintBox(x.p.x, x.p.y, x.f));
+  const labelBoxes: Box[] = [];
   const groups = new Set(scenario.nodes.flatMap((n) => n.groups));
   for (const g of groups) {
     const hull = paddedHull(pos.filter((x) => x.n.groups.includes(g)).map((x): Point => [x.p.x, x.p.y]));
@@ -120,8 +139,24 @@ export function snapshot(
     labelAngles?.set(g, spot.angle);
     if (obstacles.some((o) => overlapDepth(spot.box, o) > 1)) repoLabelOverlaps++;
     obstacles.push(spot.box);
+    labelBoxes.push(spot.box);
   }
   const fitScale1080 = fitTransform(bounds(pos.map((x) => x.p)), 1920, 1080).scale;
+  // GraphView draws icons only on threads with traffic, so only those in `weights`.
+  let mediaIconOverlaps = 0;
+  const iconObstacles: Box[] = [...labelBoxes, ...pos.flatMap((x) => nodeParts(x.p.x, x.p.y, x.n.name, x.n.hostname))];
+  for (const key of weights.keys()) {
+    const count = scenario.media.get(key);
+    if (!count) continue;
+    const [a, b] = key.split('|') as [string, string];
+    const pa = layout.node(a);
+    const pb = layout.node(b);
+    if (!pa || !pb) continue;
+    const spot = placeMediaIcons(pa, pb, mediaIconHalfSize(count, fitScale1080), fitScale1080, iconObstacles, iconSpots?.get(key));
+    iconSpots?.set(key, spot);
+    if (iconObstacles.some((o) => overlapDepth(spot.box, o) > 1)) mediaIconOverlaps++;
+    iconObstacles.push(spot.box);
+  }
   const ws: number[] = [];
   const ds: number[] = [];
   for (const [key, w] of weights) {
@@ -132,7 +167,15 @@ export function snapshot(
     ws.push(w);
     ds.push(Math.hypot(pa.x - pb.x, pa.y - pb.y));
   }
-  return { labelOverlaps, nodesOverlapped: overlapped.size, intrusions, repoLabelOverlaps, fitScale1080, proximity: spearman(ws, ds) };
+  return {
+    labelOverlaps,
+    nodesOverlapped: overlapped.size,
+    intrusions,
+    repoLabelOverlaps,
+    mediaIconOverlaps,
+    fitScale1080,
+    proximity: spearman(ws, ds),
+  };
 }
 
 /** The label the web app draws for a repo key: its last path segment. */
@@ -166,7 +209,7 @@ export interface RunResult {
   /** At the end of the measured traffic. */
   final: Snapshot;
   /** Worst per-frame snapshot values seen during traffic. */
-  worst: { labelOverlaps: number; intrusions: number; repoLabelOverlaps: number };
+  worst: { labelOverlaps: number; intrusions: number; repoLabelOverlaps: number; mediaIconOverlaps: number };
   /** Mean node speed during traffic, layout px per second. */
   meanSpeed: number;
   /** 95th percentile of per-node, per-second displacement during traffic, px. */
@@ -195,7 +238,7 @@ export function runScenario(scenario: Scenario, opts: RunOptions): RunResult {
   const edges = new Map<string, EdgeWeightState>();
   const message = (now: number) => {
     const [a, b] = scenario.pairs[Math.floor(random() * scenario.pairs.length)]!;
-    const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+    const key = edgeKey(a, b);
     edges.set(key, bumpEdge(edges.get(key) ?? emptyEdge(now), now));
   };
   const historyMs = 20 * 60_000;
@@ -223,10 +266,11 @@ export function runScenario(scenario: Scenario, opts: RunOptions): RunResult {
     if (settleFrames < 0 && layout.sim.alpha() < layout.sim.alphaMin()) settleFrames = f + 1;
   }
   const labelAngles = new Map<string, number>();
-  const settled = snapshot(layout, scenario, weightsAt(now), labelAngles);
+  const iconSpots = new Map<string, { t: number; side: number }>();
+  const settled = snapshot(layout, scenario, weightsAt(now), labelAngles, iconSpots);
 
   const trafficMs = opts.trafficMs ?? 120_000;
-  const worst = { labelOverlaps: 0, intrusions: 0, repoLabelOverlaps: 0 };
+  const worst = { labelOverlaps: 0, intrusions: 0, repoLabelOverlaps: 0, mediaIconOverlaps: 0 };
   let travelled = 0;
   const steps: number[] = [];
   let lastSecond = new Map(scenario.nodes.map((n) => [n.id, { ...layout.node(n.id)! }]));
@@ -266,15 +310,17 @@ export function runScenario(scenario: Scenario, opts: RunOptions): RunResult {
         steps.push(Math.hypot(p.x - q.x, p.y - q.y));
       }
       lastSecond = new Map(scenario.nodes.map((n) => [n.id, { ...layout.node(n.id)! }]));
-      const s = snapshot(layout, scenario, weightsAt(now), labelAngles);
+      const s = snapshot(layout, scenario, weightsAt(now), labelAngles, iconSpots);
       worst.labelOverlaps = Math.max(worst.labelOverlaps, s.labelOverlaps);
       worst.intrusions = Math.max(worst.intrusions, s.intrusions);
+      worst.repoLabelOverlaps = Math.max(worst.repoLabelOverlaps, s.repoLabelOverlaps);
+      worst.mediaIconOverlaps = Math.max(worst.mediaIconOverlaps, s.mediaIconOverlaps);
     }
   }
   steps.sort((a, b) => a - b);
   return {
     settled,
-    final: snapshot(layout, scenario, weightsAt(now), labelAngles),
+    final: snapshot(layout, scenario, weightsAt(now), labelAngles, iconSpots),
     worst,
     meanSpeed: travelled / scenario.nodes.length / (trafficMs / 1000),
     p95Step: steps[Math.floor(steps.length * 0.95)] ?? 0,

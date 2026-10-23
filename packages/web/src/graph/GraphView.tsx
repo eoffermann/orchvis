@@ -3,9 +3,10 @@ import type { MediaKind } from '@orchvis/protocol';
 import { formatAgo } from '../overlays/model';
 import type { Selection } from '../store/types';
 import { useAppState, useStoreInstance } from '../store/useStore';
-import { HOST_BASELINE, NAME_BASELINE, NODE_RADIUS, footprintBox, hostLabel, nodeFootprint } from './footprint';
-import { hullLabelHalfSize, hullPath, paddedHull, placeHullLabel, type Box, type Point } from './hull';
+import { HOST_BASELINE, NAME_BASELINE, NODE_RADIUS, footprintBox, hostLabel, nodeFootprint, nodeParts, type Box } from './footprint';
+import { hullLabelHalfSize, hullPath, paddedHull, placeHullLabel, type Point } from './hull';
 import { GraphLayout } from './layout';
+import { MEDIA_ICON_PITCH, mediaIconHalfSize, placeMediaIcons } from './mediaIcons';
 import { buildGraphModel, type GraphModel } from './model';
 import { HaloSystem, PulseSystem } from './pulses';
 import { useRefMap } from './useRefMap';
@@ -67,6 +68,9 @@ export function GraphView({ onSelect }: GraphViewProps) {
   const halosRef = useRef(new HaloSystem());
   const modelRef = useRef<GraphModel>(model);
   modelRef.current = model;
+  // The labels each node draws this render, for placing media icons clear of them.
+  const nodeLabelsRef = useRef(new Map<string, { name: string; host: string }>());
+  nodeLabelsRef.current = new Map(model.nodes.map((n) => [n.id, { name: n.session.name, host: hostLabel(n.session, state.now) }]));
 
   const svgRef = useRef<SVGSVGElement | null>(null);
   const viewportRef = useRef<SVGGElement | null>(null);
@@ -150,6 +154,8 @@ export function GraphView({ onSelect }: GraphViewProps) {
     const pulseEls: SVGCircleElement[] = [];
     // Each repo label's last outward angle, so it stays put while its spot is clear.
     const labelAngles = new Map<string, number>();
+    // Each thread's last spot for its media icons, likewise.
+    const iconSpots = new Map<string, { t: number; side: number }>();
     const frame = () => {
       raf = requestAnimationFrame(frame);
       const now = performance.now();
@@ -199,18 +205,12 @@ export function GraphView({ onSelect }: GraphViewProps) {
             el.setAttribute('x2', b.x.toFixed(1));
             el.setAttribute('y2', b.y.toFixed(1));
           }
-          const icon = iconEls.map.get(e.threadId);
-          if (icon) {
-            icon.setAttribute(
-              'transform',
-              `translate(${((a.x + b.x) / 2).toFixed(1)},${((a.y + b.y) / 2).toFixed(1)}) scale(${inv.toFixed(4)})`,
-            );
-          }
         }
 
         // Repo labels go where they cover no node and no other repo label.
         const obstacles: Box[] = [];
         for (const n of layout.allNodes()) obstacles.push(footprintBox(n.x, n.y, n.footprint));
+        const labelBoxes: Box[] = [];
         for (const g of m.groups) {
           const path = hullPathEls.map.get(g.key);
           if (!path) continue;
@@ -227,8 +227,26 @@ export function GraphView({ onSelect }: GraphViewProps) {
           if (!spot) continue;
           labelAngles.set(g.key, spot.angle);
           obstacles.push(spot.box);
+          labelBoxes.push(spot.box);
           label.setAttribute('x', spot.x.toFixed(1));
           label.setAttribute('y', spot.y.toFixed(1));
+        }
+
+        // Media icons go on or beside their edge, clear of what nodes draw, repo labels and other icons.
+        const iconObstacles = [...labelBoxes];
+        for (const n of layout.allNodes()) {
+          const text = nodeLabelsRef.current.get(n.id);
+          if (text) iconObstacles.push(...nodeParts(n.x, n.y, text.name, text.host));
+        }
+        for (const e of m.edges) {
+          const icon = iconEls.map.get(e.threadId);
+          const a = layout.node(e.a);
+          const b = layout.node(e.b);
+          if (!icon || !a || !b) continue;
+          const spot = placeMediaIcons(a, b, mediaIconHalfSize(e.media.length, v.scale), v.scale, iconObstacles, iconSpots.get(e.threadId));
+          iconSpots.set(e.threadId, spot);
+          iconObstacles.push(spot.box);
+          icon.setAttribute('transform', `translate(${spot.x.toFixed(1)},${spot.y.toFixed(1)}) scale(${inv.toFixed(4)})`);
         }
       }
 
@@ -383,7 +401,7 @@ export function GraphView({ onSelect }: GraphViewProps) {
           })}
         </g>
         <g ref={pulseLayerRef} className="layer-pulses" />
-        {/* Media icons sit under the nodes: where one overlaps a node, the node takes the click. */}
+        {/* Media icons sit under the nodes, placed clear of them; where one still overlaps a node, the node takes the click. */}
         <g className="layer-media">
           {model.edges.map((e) =>
             e.media.length === 0 || !e.matches ? null : (
@@ -392,7 +410,7 @@ export function GraphView({ onSelect }: GraphViewProps) {
                   <g
                     key={m.kind}
                     className={`media-icon media-icon--${m.kind}`}
-                    transform={`translate(${(i - (e.media.length - 1) / 2) * MIN_HIT_PX},0)`}
+                    transform={`translate(${(i - (e.media.length - 1) / 2) * MEDIA_ICON_PITCH},0)`}
                     tabIndex={0}
                     role="button"
                     aria-label={`Browse ${m.count} ${MEDIA_LABELS[m.kind]}`}
@@ -405,7 +423,13 @@ export function GraphView({ onSelect }: GraphViewProps) {
                     <title>
                       {m.count} {MEDIA_LABELS[m.kind]}
                     </title>
-                    <rect className="media-hit" x={-MIN_HIT_PX / 2} y={-MIN_HIT_PX / 2} width={MIN_HIT_PX} height={MIN_HIT_PX} />
+                    <rect
+                      className="media-hit"
+                      x={-MEDIA_ICON_PITCH / 2}
+                      y={-MEDIA_ICON_PITCH / 2}
+                      width={MEDIA_ICON_PITCH}
+                      height={MEDIA_ICON_PITCH}
+                    />
                     <circle className="media-badge" r={13} />
                     <text className="media-glyph" textAnchor="middle" dy="0.35em">
                       {MEDIA_GLYPHS[m.kind]}

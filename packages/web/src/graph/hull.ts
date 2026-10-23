@@ -1,4 +1,5 @@
 import { polygonHull } from 'd3-polygon';
+import type { Box } from './footprint';
 
 /** A 2D point. */
 export type Point = readonly [number, number];
@@ -72,13 +73,7 @@ export function hullTop(hull: readonly Point[] | null): Point | null {
   return top;
 }
 
-/** An axis-aligned box in layout px. */
-export interface Box {
-  left: number;
-  top: number;
-  right: number;
-  bottom: number;
-}
+export type { Box };
 
 /** Repo label font size in px (`.hull-label`: 1rem, weight 600). */
 export const HULL_LABEL_FONT_PX = 16;
@@ -106,7 +101,7 @@ export interface HullLabelPlacement {
 }
 
 /** Area two boxes share beyond a 1 px tolerance on each axis; 0 when they only touch. */
-function overlapArea(a: Box, b: Box): number {
+export function overlapArea(a: Box, b: Box): number {
   const ox = Math.min(a.right, b.right) - Math.max(a.left, b.left);
   const oy = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
   return ox > 1 && oy > 1 ? ox * oy : 0;

@@ -34,14 +34,37 @@ export interface Footprint {
   bottom: number;
 }
 
+/** An axis-aligned box in layout px. */
+export interface Box {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
 /** A footprint placed at a node center, as a box in layout px. */
-export function footprintBox(x: number, y: number, f: Footprint): { left: number; top: number; right: number; bottom: number } {
+export function footprintBox(x: number, y: number, f: Footprint): Box {
   return { left: x - f.halfWidth, right: x + f.halfWidth, top: y + f.top, bottom: y + f.bottom };
 }
 
 /** The host line under a node: hostname, plus when it was last seen if disconnected. */
 export function hostLabel(session: Pick<SessionNode, 'hostname' | 'connected' | 'lastSeen'>, now: number): string {
   return session.connected ? session.hostname : `${session.hostname} · last seen ${formatAgo(now - session.lastSeen)}`;
+}
+
+/**
+ * The boxes a node actually draws, at its center: the circle with its ring
+ * and poll badge, the name line and the host line. Tighter than the
+ * footprint, which also covers the empty corners beside the circle.
+ */
+export function nodeParts(x: number, y: number, name: string, host: string): Box[] {
+  const nameHalf = (name.length * NAME_PX_PER_CHAR) / 2;
+  const hostHalf = (host.length * HOST_PX_PER_CHAR) / 2;
+  return [
+    { left: x - NODE_RADIUS - 6, right: x + NODE_RADIUS + 6, top: y - NODE_RADIUS - 6, bottom: y + NODE_RADIUS + 2 },
+    { left: x - nameHalf, right: x + nameHalf, top: y + NAME_BASELINE - 15, bottom: y + NAME_BASELINE + 5 },
+    { left: x - hostHalf, right: x + hostHalf, top: y + HOST_BASELINE - 12, bottom: y + HOST_BASELINE + 4 },
+  ];
 }
 
 /**
